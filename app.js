@@ -6,7 +6,8 @@
   const DAY = 86400000;
   // Lernsystem mit 5 Fächern (0–4):
   // richtig in Fach X → ein Fach hoch, nächste Abfrage in X+1 Tagen (Fach 4 bleibt Fach 4, 5 Tage)
-  // falsch → ein Fach runter, kommt morgen wieder (und in der laufenden Runde nochmal)
+  // falsch → ein Fach runter, kommt morgen wieder und ans Ende der laufenden Runde;
+  // dort richtig → Fach bleibt, wieder falsch → Fach 1
   const MAX_BOX = 4;
   const MASTER_BOX = 4; // im obersten Fach gilt eine Vokabel als "sicher"
   const DIR_LABEL = { 'de-it': 'Deutsch → Italienisch', 'it-de': 'Italienisch → Deutsch' };
@@ -539,10 +540,14 @@
         S.results.push({ card: it.card, dir: it.dir, ok: S.cur.ok });
         if (S.exam && state.exams[S.exam]) Exams.record(state.exams[S.exam], it.card.id, S.cur.ok);
         save();
+      } else if (!S.cur.ok) {
+        // Wiederholung am Rundenende wieder falsch → Fach 1 (richtig bei der Wiederholung → Fach bleibt)
+        const p = state.progress[k];
+        if (p) { p.box = 1; p.due = startOfToday() + DAY; p.updated = now(); save(); }
       }
       if (!S.cur.ok) {
-        // Falsche Vokabel kommt in dieser Runde noch einmal dran (wird aber nur einmal bewertet)
-        S.queue.splice(Math.min(3, S.queue.length), 0, { ...it, mode: it.mode === 'choice' ? 'choice' : it.mode });
+        // Falsche Vokabel kommt ganz ans Ende der Runde, bis sie sitzt
+        S.queue.push({ ...it });
       }
       next();
     }
@@ -1241,7 +1246,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.3</p>`;
+      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.4</p>`;
 
     Push.paint();
     const f = $('#loginForm');
