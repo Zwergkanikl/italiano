@@ -342,7 +342,111 @@
       return { text: lastSync ? 'Synchronisiert ' + new Date(lastSync).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' }) : 'Angemeldet.' };
     }
 
-    return { configured, run, schedule, signIn, signUp, signOut, paint, info, user: () => auth?.user };
+    return { configured, run, schedule, signIn, signUp, signOut, paint, info, token, url, key, user: () => auth?.user };
+  })();
+
+
+  // ================= Mitteilungen (Web Push) =================
+  const Push = (() => {
+    const PREF_KEY = 'italiano.push';
+    const fn = () => Sync.url + '/functions/v1/mitteilungen';
+    const supported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+    const prefs = () => ({ daily: true, streak: true, ...(JSON.parse(localStorage.getItem(PREF_KEY) || '{}')) });
+    const tz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Berlin'; } catch (e) { return 'Europe/Berlin'; } };
+    const toBytes = s => { const p = s.replace(/-/g, '+').replace(/_/g, '/'); return Uint8Array.from(atob(p + '='.repeat((4 - p.length % 4) % 4)), c => c.charCodeAt(0)); };
+
+    async function current() {
+      if (!supported) return null;
+      const reg = await navigator.serviceWorker.getRegistration();
+      return reg ? reg.pushManager.getSubscription() : null;
+    }
+
+    async function rest(path, init = {}) {
+      const t = await Sync.token();
+      const r = await fetch(Sync.url + '/rest/v1/' + path, {
+        ...init, headers: { apikey: Sync.key, Authorization: 'Bearer ' + t, 'Content-Type': 'application/json', ...(init.headers || {}) }
+      });
+      if (!r.ok) throw new Error('Speichern fehlgeschlagen (' + r.status + ')');
+    }
+
+    async function save(sub) {
+      const j = sub.toJSON(), p = prefs();
+      await rest('push_abos', {
+        method: 'POST',
+        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+        body: JSON.stringify({ endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth, tz: tz(), daily: p.daily, streak: p.streak, user_id: Sync.user().id })
+      });
+    }
+
+    async function enable() {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') throw new Error('Mitteilungen wurden nicht erlaubt.');
+      const r = await fetch(fn() + '?action=key', { headers: { apikey: Sync.key, Authorization: 'Bearer ' + (await Sync.token()) } });
+      const { publicKey, error } = await r.json();
+      if (!publicKey) throw new Error(error || 'Server nicht erreichbar.');
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: toBytes(publicKey) });
+      await save(sub);
+    }
+
+    async function disable() {
+      const sub = await current();
+      if (!sub) return;
+      await rest('push_abos?endpoint=eq.' + encodeURIComponent(sub.endpoint), { method: 'DELETE' }).catch(() => {});
+      await sub.unsubscribe();
+    }
+
+    async function setPref(k, v) {
+      localStorage.setItem(PREF_KEY, JSON.stringify({ ...prefs(), [k]: v }));
+      const sub = await current();
+      if (sub) await save(sub);
+    }
+
+    async function test() {
+      const t = await Sync.token();
+      const r = await fetch(fn() + '?action=test', { method: 'POST', headers: { apikey: Sync.key, Authorization: 'Bearer ' + t } });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'Fehler ' + r.status);
+      return d.sent;
+    }
+
+    // Beim Start: Abo still auffrischen (Zeitzone, neuer Endpoint)
+    async function refresh() {
+      try { if (Sync.user() && supported && Notification.permission === 'granted') { const s = await current(); if (s) await save(s); } } catch (e) { /* egal */ }
+    }
+
+    async function paint() {
+      const box = $('#pushBox');
+      if (!box) return;
+      const p = prefs();
+      let html;
+      if (!Sync.configured || !Sync.user()) {
+        html = `<p class="small muted" style="margin:0">Melde dich oben an, dann kannst du Mitteilungen einschalten.</p>`;
+      } else if (!supported) {
+        html = isIOS && !standalone
+          ? `<p class="small" style="margin:0">Auf iPhone und iPad gehen Mitteilungen nur in der <b>installierten App</b>: In Safari → Teilen → „Zum Home-Bildschirm“, dann die App vom Home-Bildschirm öffnen und hier einschalten.</p>`
+          : `<p class="small muted" style="margin:0">Dieser Browser kann keine Mitteilungen empfangen.</p>`;
+      } else if (Notification.permission === 'denied') {
+        html = `<p class="small" style="margin:0">Mitteilungen sind blockiert. Erlaube sie in den Einstellungen deines Geräts bzw. Browsers für Italiano.</p>`;
+      } else if (!(await current())) {
+        html = `<p class="small muted" style="margin-top:0">Erinnerung um 7:00 Uhr, wenn Vokabeln fällig sind, und um 20:00 Uhr, wenn dein Streak in Gefahr ist.</p>
+          <button class="btn primary block" data-action="push-on">🔔 Mitteilungen einschalten</button>`;
+      } else {
+        html = `
+          <label class="check"><input type="checkbox" data-pref="daily" ${p.daily ? 'checked' : ''}><span><b>Tägliche Erinnerung</b><br><span class="small muted">um 7:00 Uhr, wenn Vokabeln fällig sind</span></span></label>
+          <label class="check"><input type="checkbox" data-pref="streak" ${p.streak ? 'checked' : ''}><span><b>Streak-Warnung</b><br><span class="small muted">um 20:00 Uhr, wenn du heute noch nicht gelernt hast</span></span></label>
+          <div class="row" style="margin-top:12px"><button class="btn spacer" data-action="push-test">Test senden</button><button class="btn" data-action="push-off">Ausschalten</button></div>`;
+      }
+      box.innerHTML = html;
+      $$('[data-pref]', box).forEach(cb => cb.addEventListener('change', async () => {
+        try { await setPref(cb.dataset.pref, cb.checked); toast('Gespeichert'); } catch (e) { toast(e.message); }
+      }));
+    }
+
+    return { enable, disable, test, refresh, paint };
   })();
 
   // ================= Abfrage-Session =================
@@ -874,6 +978,9 @@
         ${syncBox}
       </div>
 
+      <div class="section-title">Mitteilungen</div>
+      <div class="card" id="pushBox"><p class="small muted" style="margin:0">…</p></div>
+
       <div class="section-title">Lernen</div>
       <div class="card">
         <label class="field"><span>Neue Vokabeln pro Tag</span><input type="number" min="0" max="100" id="setNew" value="${st.newPerDay}"></label>
@@ -892,8 +999,9 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Italiano · Version 1.1</p>`;
+      <p class="small muted" style="text-align:center">Italiano · Version 1.2</p>`;
 
+    Push.paint();
     const f = $('#loginForm');
     if (f) f.addEventListener('submit', async e => {
       e.preventDefault();
@@ -989,7 +1097,21 @@
       a.click();
       setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     },
-    'import-file': () => $('#fileIn').click()
+    'import-file': () => $('#fileIn').click(),
+    'push-on': async el => {
+      el.disabled = true; el.textContent = 'Einen Moment …';
+      try { await Push.enable(); toast('Mitteilungen eingeschaltet 🔔'); } catch (e) { toast(e.message); }
+      Push.paint();
+    },
+    'push-off': async () => {
+      try { await Push.disable(); toast('Mitteilungen ausgeschaltet'); } catch (e) { toast(e.message); }
+      Push.paint();
+    },
+    'push-test': async el => {
+      el.disabled = true;
+      try { const n = await Push.test(); toast(n ? 'Test-Mitteilung geschickt ✓' : 'Kein Gerät erreicht'); } catch (e) { toast(e.message); }
+      el.disabled = false;
+    }
   };
 
   document.addEventListener('click', e => {
@@ -1008,6 +1130,7 @@
   seed();
   render();
   Sync.run();
+  Push.refresh();
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') Sync.run(); });
   window.addEventListener('online', () => Sync.run());
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
