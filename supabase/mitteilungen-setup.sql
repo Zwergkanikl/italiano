@@ -36,7 +36,8 @@ select cron.schedule(
   '0 * * * *',
   $$ select net.http_post(
        url := 'https://xxhywrqthnjpmhkyqcog.supabase.co/functions/v1/mitteilungen?action=cron',
-       headers := '{"Content-Type": "application/json"}'::jsonb,
+       -- öffentlicher anon-Key (kein Geheimnis), nötig weil die Funktion einen gültigen JWT verlangt
+       headers := '{"Content-Type": "application/json", "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh4aHl3cnF0aG5qcG1oa3lxY29nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTU3MTc2NTAsImV4cCI6MjExMTI5MzY1MH0.157brL98UQQOBLYj3l0ZrnJK9wWIsL0h8IKOlx8N_H8"}'::jsonb,
        body := '{}'::jsonb
      ) $$
 );
