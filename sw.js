@@ -1,6 +1,6 @@
 // Service Worker: macht die App offline nutzbar.
 // Strategie: erst Netz (immer aktuell), sonst Cache (offline).
-const CACHE = 'italiano-v3';
+const CACHE = 'italiano-v4';
 const ASSETS = [
   './', 'index.html', 'style.css', 'app.js', 'config.js', 'vokabeln.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'
@@ -22,7 +22,7 @@ self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
   e.respondWith(
-    fetch(req)
+    fetch(req, { cache: 'no-cache' }) // immer beim Server nachfragen, damit Updates sofort ankommen
       .then(res => {
         const copy = res.clone();
         caches.open(CACHE).then(c => c.put(req, copy));
