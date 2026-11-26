@@ -653,7 +653,7 @@
         <div class="muted small" style="margin:10px 0 14px">${esc(scope)} · ${esc(DIR_LABEL[st.dir] || 'beide Richtungen')}</div>
         <div class="row">
           <button class="btn big spacer" data-action="learn-now" ${todo ? '' : 'disabled'}>${todo ? `Jetzt lernen (${todo})` : 'Alles erledigt ✓'}</button>
-          <button class="btn big ghost" data-action="go" data-to="learn" aria-label="Einstellen">⚙︎</button>
+          <button class="btn big ghost" data-action="go" data-to="learn">Auswahl</button>
         </div>
       </div>
       <div class="stats">
@@ -851,9 +851,9 @@
     upd();
   }
 
-  // ---------- Mehr / Einstellungen ----------
+  // ---------- Einstellungen ----------
   function viewMore(v) {
-    setTitle('Mehr');
+    setTitle('Einstellungen');
     const user = Sync.user();
     const st = state.settings;
     const syncBox = !Sync.configured
@@ -892,7 +892,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Italiano · Version 1.0</p>`;
+      <p class="small muted" style="text-align:center">Italiano · Version 1.1</p>`;
 
     const f = $('#loginForm');
     if (f) f.addEventListener('submit', async e => {
