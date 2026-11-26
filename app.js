@@ -999,7 +999,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Italiano · Version 1.2</p>`;
+      <p class="small muted" style="text-align:center">Italiano · Version 1.1</p>`;
 
     Push.paint();
     const f = $('#loginForm');
