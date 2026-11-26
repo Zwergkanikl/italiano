@@ -35,6 +35,7 @@
     progress: {},   // "id|dir" -> {box, due, seen, right, wrong, updated}
     days: {},       // "JJJJ-MM-TT" -> {reviews, correct, new}
     settings: { newPerDay: 10, sessionSize: 20, lessons: [], dir: 'de-it', mode: 'mix' },
+    exams: {},      // id -> {id, title, date, lessons, cardIds, dir, notify, target, reps, planCounts, created, updated, deleted}
     seeded: false
   });
 
@@ -155,6 +156,8 @@
         updated: Math.max(l.updated || 0, v.updated || 0)
       };
     }
+    out.exams = { ...(local.exams || {}) };
+    for (const [k, v] of Object.entries(remote.exams || {})) out.exams[k] = newer(out.exams[k], v);
     out.seeded = local.seeded || remote.seeded;
     return out;
   }
@@ -298,6 +301,7 @@
           state = merge(state, rows[0].data);
           persist();
         }
+        for (const e of Exams.upcoming()) e.planCounts = Exams.planCounts(e); // für die Termin-Mitteilung am Server
         const body = { user_id: auth.user.id, data: { ...state, settings: undefined }, updated_at: new Date().toISOString() };
         const w = await fetch(url + '/rest/v1/lernstand', {
           method: 'POST',
@@ -462,7 +466,9 @@
         results: [],
         phase: 'ask',
         cur: null,
-        practice: !!opts.practice
+        practice: !!opts.practice,
+        exam: opts.exam || null,
+        mode: opts.mode
       };
       document.body.classList.add('in-session');
       next();
@@ -526,6 +532,7 @@
         if (S.practice && S.cur.ok && p && p.seen && p.due > now()) { const ds = dayStats(); ds.reviews++; ds.correct++; ds.updated = now(); }
         else grade(it.card, it.dir, S.cur.ok);
         S.results.push({ card: it.card, dir: it.dir, ok: S.cur.ok });
+        if (S.exam && state.exams[S.exam]) Exams.record(state.exams[S.exam], it.card.id, S.cur.ok);
         save();
       }
       if (!S.cur.ok) {
@@ -536,9 +543,10 @@
     }
 
     function stop() {
+      const exam = S && S.exam;
       S = null;
       document.body.classList.remove('in-session');
-      go('home');
+      if (exam && state.exams[exam]) go('exam', { examId: exam }); else go('home');
     }
 
     function draw() {
@@ -661,7 +669,7 @@
       's-override': () => { S.cur.ok = true; S.cur.hint = 'Als richtig gewertet.'; S.cur.close = false; draw(); },
       's-next': () => commitAndNext(),
       's-stop': () => stop(),
-      's-again': () => { const items = S.lastWrong; S = null; start(shuffle(items), { mode: state.settings.mode }); }
+      's-again': () => { const items = S.lastWrong, exam = S.exam, mode = S.mode || state.settings.mode; S = null; start(shuffle(items), { mode, exam, practice: !!exam }); }
     };
 
     function key(e) {
@@ -689,6 +697,87 @@
     return { start, actions, key, active: () => !!S };
   })();
 
+
+  // ================= Termine & Lernpläne =================
+  // Datumsangaben als "JJJJ-MM-TT" (Ortszeit). dayDiff(a, b) = b − a in Tagen.
+  const dayDiff = (a, b) => Math.round((Date.parse(b + 'T12:00:00Z') - Date.parse(a + 'T12:00:00Z')) / DAY);
+  const addDays = (d, n) => { const x = new Date(d + 'T12:00:00Z'); x.setUTCDate(x.getUTCDate() + n); return x.toISOString().slice(0, 10); };
+  const fmtDate = (d, o = { weekday: 'short', day: 'numeric', month: 'short' }) => new Date(d + 'T12:00:00').toLocaleDateString('de-DE', o);
+  // Wie oft jede Vokabel bis zum Termin drankommt (inkl. Generalprobe)
+  const targetReps = days => days >= 10 ? 5 : days >= 6 ? 4 : days >= 3 ? 3 : Math.max(1, days);
+
+  const Exams = {
+    list: () => Object.values(state.exams || {}).filter(e => !e.deleted).sort((a, b) => a.date.localeCompare(b.date)),
+    upcoming: () => Exams.list().filter(e => e.date >= today()),
+    cards(e) {
+      const ls = new Set(e.lessons || []), ids = new Set(e.cardIds || []);
+      return activeCards().filter(c => ls.has(c.lesson) || ids.has(c.id))
+        .sort((a, b) => a.lesson.localeCompare(b.lesson, 'de', { numeric: true }) || (a.created || 0) - (b.created || 0));
+    },
+    // Welche Vokabeln sind am Tag `day` dran? reps: {kartenId: {n, first, last, weak}}
+    dayList(e, cards, reps, day) {
+      const left = dayDiff(day, e.date); // Lerntage ab `day` bis zum Tag vor dem Termin
+      if (left < 0) return { ids: [], final: false, fresh: 0 };
+      const open = cards.filter(c => reps[c.id]?.last !== day);
+      if (left <= 1) return { ids: open.map(c => c.id), final: true, fresh: open.filter(c => !reps[c.id]?.n).length };
+      const T = e.target || 3;
+      const fresh = open.filter(c => !reps[c.id]?.n);
+      const introToday = cards.filter(c => reps[c.id]?.first === day).length;
+      const introDays = Math.max(1, Math.min(left - (T - 1), Math.ceil(left / 2))); // neue Wörter in der ersten Hälfte, damit genug Wiederholungen passen
+      const quota = Math.max(0, Math.ceil((fresh.length + introToday) / introDays) - introToday);
+      const ids = fresh.slice(0, quota).map(c => c.id);
+      for (const c of open) {
+        const r = reps[c.id];
+        if (!r || !r.n) continue;
+        if (r.weak && r.last < day) { ids.push(c.id); continue; } // falsch gewusst → gleich am nächsten Tag
+        if (r.n >= T) continue;
+        const gap = Math.max(1, Math.floor(dayDiff(r.last, e.date) / (T - r.n)));
+        if (dayDiff(r.last, day) >= gap) ids.push(c.id);
+      }
+      return { ids, final: false, fresh: Math.min(quota, fresh.length) };
+    },
+    todayList(e) { return Exams.dayList(e, Exams.cards(e), e.reps || {}, today()); },
+    doneToday(e) { const t = today(); return Exams.cards(e).filter(c => e.reps?.[c.id]?.last === t).length; },
+    // Plan ab heute simulieren (unter der Annahme, dass jeder Tag erledigt wird)
+    plan(e) {
+      const cards = Exams.cards(e), reps = JSON.parse(JSON.stringify(e.reps || {})), out = [], t = today();
+      for (let d = t; d < e.date && out.length < 400; d = addDays(d, 1)) {
+        const l = Exams.dayList(e, cards, reps, d);
+        out.push({ date: d, count: l.ids.length, fresh: l.fresh, final: l.final, done: d === t ? Exams.doneToday(e) : 0 });
+        for (const id of l.ids) { const r = reps[id] || (reps[id] = { n: 0 }); r.n++; r.first = r.first || d; r.last = d; r.weak = false; }
+      }
+      return out;
+    },
+    planCounts(e) {
+      const k = dirsFor(e.dir || 'de-it').length;
+      const out = Object.fromEntries(Exams.plan(e).map(p => [p.date, p.count * k]));
+      if (e.date === today()) out[e.date] = Exams.todayList(e).ids.length * k;
+      return out;
+    },
+    progress(e) {
+      const cards = Exams.cards(e), T = e.target || 3;
+      if (!cards.length) return 0;
+      return cards.reduce((n, c) => n + Math.min(T, e.reps?.[c.id]?.n || 0), 0) / (cards.length * T);
+    },
+    record(e, cardId, ok) {
+      const t = today();
+      e.reps = e.reps || {};
+      const r = e.reps[cardId] || (e.reps[cardId] = { n: 0 });
+      if (r.last !== t) { r.n++; r.first = r.first || t; r.last = t; r.weak = !ok; }
+      else if (!ok) r.weak = true;
+      e.updated = now();
+    }
+  };
+
+  function startExam(id) {
+    const e = state.exams[id];
+    if (!e) return;
+    const ids = new Set(Exams.todayList(e).ids);
+    const items = [];
+    for (const c of Exams.cards(e)) if (ids.has(c.id)) for (const d of dirsFor(e.dir || 'de-it')) items.push({ card: c, dir: d });
+    Session.start(shuffle(items), { mode: state.settings.mode, practice: true, exam: id });
+  }
+
   function startLearning(lessons, opts = {}) {
     const st = state.settings;
     const dir = opts.dir || st.dir;
@@ -712,7 +801,7 @@
 
   // ================= Ansichten =================
   let route = 'home';
-  let ui = { vocabLesson: '', vocabSearch: '', editId: null, formLesson: '', importLesson: '', importText: '' };
+  let ui = { vocabLesson: '', vocabSearch: '', editId: null, formLesson: '', importLesson: '', importText: '', examId: null, examDraft: null, examSearch: '' };
 
   function setTitle(t) { $('#title').textContent = t; document.title = t === 'Italiano' ? 'Italiano' : t + ' · Italiano'; }
 
@@ -726,9 +815,10 @@
 
   function render() {
     if (Session.active()) return; // Session zeichnet sich selbst
-    $$('#tabbar button').forEach(b => b.classList.toggle('active', b.dataset.to === route || (route === 'edit' || route === 'import') && b.dataset.to === 'vocab'));
+    const tab = { edit: 'vocab', import: 'vocab', exam: 'exams', examEdit: 'exams' }[route] || route;
+    $$('#tabbar button').forEach(b => b.classList.toggle('active', b.dataset.to === tab));
     const v = $('#view');
-    const views = { home: viewHome, learn: viewLearn, vocab: viewVocab, edit: viewEdit, import: viewImport, more: viewMore };
+    const views = { home: viewHome, learn: viewLearn, vocab: viewVocab, edit: viewEdit, import: viewImport, more: viewMore, exams: viewExams, exam: viewExam, examEdit: viewExamEdit };
     (views[route] || viewHome)(v);
     Sync.paint();
   }
@@ -765,6 +855,7 @@
         <div class="stat"><b>${ds.reviews || 0}</b><span>Abfragen heute</span></div>
         <div class="stat"><b>${mastered}</b><span>sicher von ${cards.length * 2}</span></div>
       </div>
+      ${Exams.upcoming().length ? `<div class="section-title">Nächste Termine</div>${Exams.upcoming().slice(0, 2).map(e => examCard(e)).join('')}` : ''}
       <div class="section-title">Lektionen</div>
       <div class="card">
         ${lessons.size ? [...lessons.entries()].map(([name, list]) => {
@@ -779,6 +870,153 @@
           </div>`;
         }).join('') : `<div class="empty">Noch keine Vokabeln. <a href="#" data-action="go" data-to="import">Liste importieren</a></div>`}
       </div>`;
+  }
+
+
+  // ---------- Termine ----------
+  const countdown = e => { const d = dayDiff(today(), e.date); return d === 0 ? 'heute' : d === 1 ? 'morgen' : d < 0 ? 'vorbei' : `in ${d} Tagen`; };
+
+  function examCard(e, detail = false) {
+    const t = Exams.todayList(e), k = dirsFor(e.dir || 'de-it').length, n = Exams.cards(e).length;
+    const done = Exams.doneToday(e), isDay = e.date === today();
+    const todayTxt = t.ids.length
+      ? `<b>Heute: ${plural(t.ids.length * k, 'Abfrage', 'Abfragen')}</b>${t.final ? (isDay ? ' · letzter Check' : ' · Generalprobe') : ''}`
+      : done ? 'Heute erledigt ✓' : 'Heute frei';
+    const d = new Date(e.date + 'T12:00:00');
+    return `<div class="card exam-card" ${detail ? '' : `data-action="exam-open" data-id="${esc(e.id)}"`}>
+      <div class="row">
+        <div class="exam-date"><b>${d.getDate()}</b><span>${d.toLocaleDateString('de-DE', { month: 'short' })}</span></div>
+        <div class="spacer" style="min-width:0">
+          <div class="name">${esc(e.title)}</div>
+          <div class="small muted">${countdown(e)} · ${plural(n, 'Vokabel', 'Vokabeln')}${e.notify ? ' · 🔔 7:00' : ''}</div>
+        </div>
+      </div>
+      <div class="bar" title="Fortschritt im Lernplan"><i style="width:${Math.round(Exams.progress(e) * 100)}%"></i></div>
+      <div class="row" style="margin-top:12px">
+        <span class="small spacer">${todayTxt}</span>
+        ${t.ids.length ? `<button class="btn primary small" data-action="exam-learn" data-id="${esc(e.id)}">Lernen</button>` : ''}
+      </div>
+    </div>`;
+  }
+
+  function viewExams(v) {
+    setTitle('Termine');
+    const up = Exams.upcoming(), past = Exams.list().filter(e => e.date < today()).reverse();
+    v.innerHTML = `
+      <button class="btn primary block" style="margin:6px 0 14px" data-action="exam-new">+ Neuer Termin</button>
+      ${up.length ? up.map(e => examCard(e)).join('') : `<div class="card empty">Noch keine Termine.<br>Leg z. B. deine nächste Ex an – die App macht dir dann einen Lernplan bis dahin.</div>`}
+      ${past.length ? `<div class="section-title">Vergangen</div><div class="card">${past.map(e => `
+        <div class="vocab-item" data-action="exam-open" data-id="${esc(e.id)}">
+          <div class="spacer"><div class="it">${esc(e.title)}</div><div class="de">${fmtDate(e.date, { day: 'numeric', month: 'long', year: 'numeric' })}</div></div>
+        </div>`).join('')}</div>` : ''}`;
+  }
+
+  function viewExam(v) {
+    const e = state.exams[ui.examId];
+    if (!e || e.deleted) { route = 'exams'; return viewExams(v); }
+    setTitle(e.title);
+    const k = dirsFor(e.dir || 'de-it').length, t = today();
+    const plan = Exams.plan(e);
+    const dayName = d => d === t ? 'Heute' : d === addDays(t, 1) ? 'Morgen' : fmtDate(d);
+    const rows = plan.map(p => {
+      let txt;
+      if (p.final) txt = p.count ? `<b>Generalprobe:</b> ${plural(p.count * k, 'Abfrage', 'Abfragen')}` : 'Generalprobe erledigt ✓';
+      else if (p.count) txt = `${plural(p.count * k, 'Abfrage', 'Abfragen')}${p.fresh ? ` <span class="muted">(${p.fresh} neu)</span>` : ''}`;
+      else txt = p.date === t && p.done ? 'erledigt ✓' : '<span class="muted">frei</span>';
+      if (p.date === t && p.done && p.count) txt += ` <span class="muted">· ${p.done} schon geschafft</span>`;
+      return `<div class="plan-row ${p.date === t ? 'today' : ''}"><span class="plan-day">${dayName(p.date)}</span><span class="spacer">${txt}</span></div>`;
+    }).join('');
+    const lessons = (e.lessons || []).filter(l => lessonMap().has(l));
+    const extra = (e.cardIds || []).filter(id => state.cards[id] && !state.cards[id].deleted && !lessons.includes(state.cards[id].lesson)).length;
+    v.innerHTML = `
+      ${examCard(e, true)}
+      <div class="section-title">Lernplan</div>
+      <div class="card">
+        ${rows || ''}
+        <div class="plan-row exam-day"><span class="plan-day">${dayName(e.date) === 'Heute' ? 'Heute' : fmtDate(e.date)}</span><span class="spacer"><b>🎯 ${esc(e.title)}</b> – viel Erfolg!</span></div>
+        <p class="small muted" style="margin:10px 0 0">Jede Vokabel kommt bis zum Termin etwa ${e.target || 3}× dran, mit wachsenden Abständen. Was du falsch hast, kommt am nächsten Tag nochmal.</p>
+      </div>
+      <div class="section-title">Stoff</div>
+      <div class="card small">
+        ${lessons.length ? `<div class="chips" style="margin-bottom:${extra ? 8 : 0}px">${lessons.map(l => `<span class="chip on">${esc(l)}</span>`).join('')}</div>` : ''}
+        ${extra ? `<div class="muted">+ ${plural(extra, 'einzelne Vokabel', 'einzelne Vokabeln')}</div>` : ''}
+        <div class="muted" style="margin-top:6px">${esc(DIR_LABEL[e.dir] || 'Beide Richtungen')}</div>
+      </div>
+      <div class="row">
+        <button class="btn spacer" data-action="exam-edit" data-id="${esc(e.id)}">Bearbeiten</button>
+        <button class="btn spacer" data-action="exam-practice" data-id="${esc(e.id)}">Alles abfragen</button>
+      </div>`;
+  }
+
+  function viewExamEdit(v) {
+    const e = ui.examId ? state.exams[ui.examId] : null;
+    setTitle(e ? 'Termin bearbeiten' : 'Neuer Termin');
+    if (!ui.examDraft) {
+      ui.examDraft = e
+        ? { title: e.title, date: e.date, lessons: [...(e.lessons || [])], cardIds: [...(e.cardIds || [])], dir: e.dir || 'de-it', notify: e.notify !== false }
+        : { title: '', date: addDays(today(), 7), lessons: [], cardIds: [], dir: 'de-it', notify: true };
+      ui.examSearch = '';
+    }
+    const d = ui.examDraft;
+    const lessons = [...lessonMap().keys()];
+    const seg = (val, label) => `<button type="button" class="${d.dir === val ? 'on' : ''}" data-action="exam-dir" data-v="${val}">${label}</button>`;
+    const pushOff = !('Notification' in window) || Notification.permission !== 'granted';
+    v.innerHTML = `
+      <div class="card">
+        <label class="field"><span>Titel</span><input type="text" id="exTitle" value="${esc(d.title)}" placeholder="z. B. Ex Lektion 3"></label>
+        <label class="field" style="margin-bottom:0"><span>Datum</span><input type="date" id="exDate" value="${esc(d.date)}" min="${today()}"></label>
+      </div>
+      <div class="section-title">Lektionen</div>
+      <div class="card">
+        ${lessons.length ? `<div class="chips">${lessons.map(l => `<button type="button" class="chip ${d.lessons.includes(l) ? 'on' : ''}" data-action="exam-lesson" data-lesson="${esc(l)}">${esc(l)}</button>`).join('')}</div>` : '<span class="muted small">Noch keine Lektionen.</span>'}
+      </div>
+      <div class="section-title">Einzelne Vokabeln</div>
+      <div class="card">
+        <input type="search" id="exSearch" placeholder="Vokabel suchen und anhaken …" value="${esc(ui.examSearch)}" style="margin-bottom:8px">
+        <div id="exCardList" class="pick-list"></div>
+      </div>
+      <div class="section-title">Richtung</div>
+      <div class="seg">${seg('de-it', 'DE → IT')}${seg('it-de', 'IT → DE')}${seg('both', 'Beide')}</div>
+      <div class="section-title">Erinnerung</div>
+      <div class="card">
+        <label class="check"><input type="checkbox" id="exNotify" ${d.notify ? 'checked' : ''}><span><b>Mitteilung um 7:00 Uhr</b><br><span class="small muted">erinnert dich jeden Tag an deinen Lernplan für diesen Termin</span></span></label>
+        ${pushOff ? `<p class="small muted" style="margin:8px 0 0">Damit sie ankommt, müssen Mitteilungen auf dem Gerät eingeschaltet sein (Einstellungen → Mitteilungen).</p>` : ''}
+      </div>
+      <div class="card" id="exSummary"></div>
+      <div class="row">
+        <button class="btn" data-action="exam-cancel">Abbrechen</button>
+        <button class="btn primary spacer" data-action="exam-save">${e ? 'Speichern' : 'Termin anlegen'}</button>
+      </div>
+      ${e ? `<button class="btn danger block" style="margin-top:12px" data-action="exam-delete">Termin löschen</button>` : ''}`;
+
+    const summary = () => {
+      const tmp = { lessons: d.lessons, cardIds: d.cardIds };
+      const n = Exams.cards(tmp).length, days = Math.max(0, dayDiff(today(), d.date));
+      $('#exSummary').innerHTML = `<div class="small">${n ? `<b>${plural(n, 'Vokabel', 'Vokabeln')}</b> ausgewählt` : '<span class="muted">Noch keine Vokabeln ausgewählt.</span>'}
+        ${n && d.date >= today() ? ` · ${plural(days, 'Lerntag', 'Lerntage')} · jede Vokabel ca. ${targetReps(days)}×` : ''}</div>`;
+    };
+    const drawCards = () => {
+      const q = noAccent(norm(ui.examSearch));
+      const inLesson = new Set(d.lessons);
+      const picked = new Set(d.cardIds);
+      let list = activeCards().filter(c => !inLesson.has(c.lesson));
+      list = q ? list.filter(c => noAccent(norm(c.it + ' ' + c.de)).includes(q)) : list.filter(c => picked.has(c.id));
+      $('#exCardList').innerHTML = list.length
+        ? list.slice(0, 60).map(c => `<label class="check"><input type="checkbox" data-card="${esc(c.id)}" ${picked.has(c.id) ? 'checked' : ''}><span>${esc(c.it)} <span class="muted small">– ${esc(c.de)} · ${esc(c.lesson)}</span></span></label>`).join('')
+        : `<p class="small muted" style="margin:0">${q ? 'Nichts gefunden (Vokabeln aus gewählten Lektionen sind schon drin).' : 'Suche oben, um einzelne Vokabeln aus anderen Lektionen dazuzunehmen.'}</p>`;
+      $$('[data-card]', $('#exCardList')).forEach(cb => cb.addEventListener('change', () => {
+        const s2 = new Set(d.cardIds);
+        cb.checked ? s2.add(cb.dataset.card) : s2.delete(cb.dataset.card);
+        d.cardIds = [...s2];
+        summary();
+      }));
+    };
+    $('#exTitle').addEventListener('input', ev => { d.title = ev.target.value; });
+    $('#exDate').addEventListener('change', ev => { d.date = ev.target.value; summary(); });
+    $('#exNotify').addEventListener('change', ev => { d.notify = ev.target.checked; });
+    $('#exSearch').addEventListener('input', ev => { ui.examSearch = ev.target.value; drawCards(); });
+    drawCards();
+    summary();
   }
 
   // ---------- Lernen einstellen ----------
@@ -999,7 +1237,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Italiano · Version 1.1</p>`;
+      <p class="small muted" style="text-align:center">Italiano · Version 1.2</p>`;
 
     Push.paint();
     const f = $('#loginForm');
@@ -1048,6 +1286,52 @@
       persist(); render();
     },
     'new-card': () => go('edit', { editId: null }),
+    'exam-new': () => go('examEdit', { examId: null, examDraft: null }),
+    'exam-open': el => go('exam', { examId: el.dataset.id }),
+    'exam-edit': el => go('examEdit', { examId: el.dataset.id, examDraft: null }),
+    'exam-learn': el => startExam(el.dataset.id),
+    'exam-practice': el => {
+      const e = state.exams[el.dataset.id];
+      const items = [];
+      for (const c of Exams.cards(e)) for (const d of dirsFor(e.dir || 'de-it')) items.push({ card: c, dir: d });
+      Session.start(shuffle(items), { mode: state.settings.mode, practice: true, exam: e.id });
+    },
+    'exam-dir': el => { ui.examDraft.dir = el.dataset.v; render(); },
+    'exam-lesson': el => {
+      const s2 = new Set(ui.examDraft.lessons), l = el.dataset.lesson;
+      s2.has(l) ? s2.delete(l) : s2.add(l);
+      ui.examDraft.lessons = [...s2];
+      render();
+    },
+    'exam-cancel': () => { const id = ui.examId; ui.examDraft = null; id && state.exams[id] ? go('exam', { examId: id }) : go('exams'); },
+    'exam-save': () => {
+      const d = ui.examDraft;
+      d.title = ($('#exTitle')?.value ?? d.title).trim();
+      if (!d.title) return toast('Gib dem Termin einen Titel');
+      if (!d.date || d.date < today()) return toast('Wähle ein Datum ab heute');
+      if (!Exams.cards(d).length) return toast('Wähle mindestens eine Lektion oder Vokabel');
+      const ex = ui.examId ? state.exams[ui.examId] : null;
+      let id;
+      if (ex) {
+        if (ex.date !== d.date) ex.target = targetReps(dayDiff(today(), d.date));
+        Object.assign(ex, d, { updated: now() });
+        id = ex.id;
+      } else {
+        id = uid();
+        state.exams[id] = { id, ...d, target: targetReps(dayDiff(today(), d.date)), reps: {}, created: now(), updated: now() };
+      }
+      ui.examDraft = null;
+      save();
+      toast('Lernplan erstellt ✓');
+      go('exam', { examId: id });
+    },
+    'exam-delete': () => {
+      const e = state.exams[ui.examId];
+      if (!e || !confirm(`Termin „${e.title}“ löschen?`)) return;
+      e.deleted = true; e.updated = now();
+      ui.examDraft = null;
+      save(); toast('Termin gelöscht'); go('exams');
+    },
     'edit-card': el => go('edit', { editId: el.dataset.id }),
     'delete-card': () => {
       const c = state.cards[ui.editId];
@@ -1137,5 +1421,5 @@
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
   // Fürs Testen in der Konsole
-  window.__italiano = { get state() { return state; }, checkAnswer, parseLine };
+  window.__italiano = { get state() { return state; }, checkAnswer, parseLine, Exams, dayDiff, addDays, targetReps };
 })();

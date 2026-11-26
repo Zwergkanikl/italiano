@@ -117,7 +117,7 @@ body.in-session { padding-bottom: env(safe-area-inset-bottom); }
 
 label.field { display: block; margin-bottom: 12px; }
 label.field > span { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 4px; }
-input[type=text], input[type=email], input[type=password], input[type=number], input[type=search], select, textarea {
+input[type=date], input[type=text], input[type=email], input[type=password], input[type=number], input[type=search], select, textarea {
   width: 100%; border: 1px solid var(--line); background: var(--surface); border-radius: 12px;
   padding: 11px 13px; font-size: 16px; outline: none;
 }
@@ -233,3 +233,24 @@ textarea { min-height: 180px; resize: vertical; font-family: ui-monospace, Menlo
 .check { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--line); cursor: pointer; }
 .check:first-child { border-top: 0; padding-top: 0; }
 .check input { width: 22px; height: 22px; margin: 2px 0 0; accent-color: var(--green); flex-shrink: 0; }
+
+/* ---------- Termine ---------- */
+.exam-card { cursor: pointer; }
+.exam-card .name { font-weight: 700; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.exam-card .bar { margin-top: 12px; }
+.exam-date {
+  width: 50px; height: 54px; border-radius: 12px; flex-shrink: 0;
+  background: var(--red-soft); color: var(--red);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; line-height: 1.1;
+}
+.exam-date b { font-size: 21px; }
+.exam-date span { font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.plan-row { display: flex; gap: 12px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 15px; }
+.plan-row:first-child { border-top: 0; padding-top: 0; }
+.plan-row .plan-day { width: 84px; flex-shrink: 0; color: var(--muted); font-weight: 600; font-size: 14px; }
+.plan-row.today .plan-day { color: var(--green); }
+.plan-row.exam-day .plan-day { color: var(--red); }
+.pick-list { max-height: 320px; overflow-y: auto; }
+.pick-list .check { padding: 8px 0; }
+.tabbar button { min-width: 0; }
+.tabbar span { white-space: nowrap; }

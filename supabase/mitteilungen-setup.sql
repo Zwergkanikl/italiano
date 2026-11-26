@@ -41,3 +41,6 @@ select cron.schedule(
        body := '{}'::jsonb
      ) $$
 );
+
+-- v1.2 (Termine): merkt sich, ob die Lernplan-Erinnerung heute schon kam
+alter table public.push_abos add column if not exists last_exam date;

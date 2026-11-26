@@ -116,7 +116,7 @@ async function encrypt(payload: string, p256dh: string, authSecret: string) {
   return concat(salt, rs, new Uint8Array([asPublic.length]), asPublic, cipher);
 }
 
-type Sub = { endpoint: string; user_id: string; p256dh: string; auth: string; tz: string; daily: boolean; streak: boolean; last_daily: string | null; last_streak: string | null };
+type Sub = { endpoint: string; user_id: string; p256dh: string; auth: string; tz: string; daily: boolean; streak: boolean; last_daily: string | null; last_streak: string | null; last_exam: string | null };
 
 async function send(sub: Sub, msg: { title: string; body: string; tag: string }) {
   const body = await encrypt(JSON.stringify({ ...msg, url: './' }), sub.p256dh, sub.auth);
@@ -181,6 +181,27 @@ function streakMessage(data: any, today: string) {
   return { title: `🔥 ${n} ${n === 1 ? 'Tag' : 'Tage'} Streak in Gefahr`, body: 'Heute hast du noch nicht gelernt. Ein paar Minuten reichen, um deinen Streak zu retten!', tag: 'italiano-streak' };
 }
 
+// Lernplan-Erinnerung für Termine (planCounts berechnet die App beim Sync)
+// deno-lint-ignore no-explicit-any
+function examMessage(data: any, today: string) {
+  // deno-lint-ignore no-explicit-any
+  const exams = Object.values<any>(data?.exams || {}).filter(e => !e.deleted && e.notify !== false && e.date >= today)
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (!exams.length) return null;
+  const left = (d: string) => Math.round((Date.parse(d + 'T12:00:00Z') - Date.parse(today + 'T12:00:00Z')) / 86400000);
+  const line = (e: { title: string; date: string; planCounts?: Record<string, number> }) => {
+    const n = left(e.date), c = e.planCounts?.[today];
+    if (n === 0) return `🎯 Heute: ${e.title} – viel Erfolg! 🍀`;
+    const when = n === 1 ? 'morgen' : `in ${n} Tagen`;
+    return `${e.title} (${when}): ${c ? `heute ${c} ${c === 1 ? 'Abfrage' : 'Abfragen'}` : 'schau in deinen Lernplan'}${n === 1 ? ' – Generalprobe!' : ''}`;
+  };
+  return {
+    title: exams.length === 1 ? `📅 ${exams[0].title}` : '📅 Dein Lernplan für heute',
+    body: exams.slice(0, 3).map(line).join('\n'),
+    tag: 'italiano-exam'
+  };
+}
+
 async function dataFor(userIds: string[]) {
   if (!userIds.length) return {};
   const rows = await db(`lernstand?select=user_id,data&user_id=in.(${userIds.join(',')})`);
@@ -199,6 +220,11 @@ async function runCron() {
       upd.last_daily = date;
       const m = dailyMessage(data[s.user_id]);
       if (m) log.push({ type: 'daily', ...(await send(s, m)) });
+    }
+    if (hour === DAILY_HOUR && s.last_exam !== date) {
+      upd.last_exam = date;
+      const m = examMessage(data[s.user_id], date);
+      if (m) log.push({ type: 'exam', ...(await send(s, m)) });
     }
     if (s.streak && hour === STREAK_HOUR && s.last_streak !== date) {
       upd.last_streak = date;
@@ -235,6 +261,8 @@ Deno.serve(async req => {
       const m = dailyMessage(data) || { title: 'Italiano 🇮🇹', body: 'Test: Mitteilungen funktionieren!', tag: 'italiano-test' };
       const results = [];
       for (const s of subs) results.push(await send(s, { ...m, title: m.title + ' (Test)' }));
+      const em = examMessage(data, localNow(subs[0]?.tz || 'Europe/Berlin').date);
+      if (em) for (const s of subs) results.push(await send(s, { ...em, title: em.title + ' (Test)' }));
       return json({ sent: results.filter(r => r.ok).length, results });
     }
     return json({ error: 'Unbekannte Aktion' }, 400);
