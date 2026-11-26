@@ -4,9 +4,11 @@
   const STORE_KEY = 'italiano.v1';
   const AUTH_KEY = 'italiano.auth';
   const DAY = 86400000;
-  // Lernsystem (Leitner): Fach 0 = neu/falsch, danach wachsende Abstände in Tagen.
-  const INTERVALS = [0, 1, 3, 7, 14, 30, 60, 120];
-  const MASTER_BOX = 4; // ab Fach 4 gilt eine Vokabel als "sicher"
+  // Lernsystem mit 5 Fächern (0–4):
+  // richtig in Fach X → ein Fach hoch, nächste Abfrage in X+1 Tagen (Fach 4 bleibt Fach 4, 5 Tage)
+  // falsch → ein Fach runter, kommt morgen wieder (und in der laufenden Runde nochmal)
+  const MAX_BOX = 4;
+  const MASTER_BOX = 4; // im obersten Fach gilt eine Vokabel als "sicher"
   const DIR_LABEL = { 'de-it': 'Deutsch → Italienisch', 'it-de': 'Italienisch → Deutsch' };
 
   // ================= Hilfsfunktionen =================
@@ -50,6 +52,8 @@
     return emptyState();
   }
   let state = load();
+  // v1.3: altes System hatte 8 Fächer → alles über Fach 4 wird Fach 4
+  for (const p of Object.values(state.progress)) if (p.box > MAX_BOX) p.box = MAX_BOX;
 
   function persist() { localStorage.setItem(STORE_KEY, JSON.stringify(state)); }
   function save() { persist(); Sync.schedule(); }
@@ -119,12 +123,13 @@
     if (correct) {
       ds.correct++;
       p.right++;
-      p.box = Math.min(p.box + 1, INTERVALS.length - 1);
-      p.due = startOfToday() + INTERVALS[p.box] * DAY;
+      const from = Math.min(p.box, MAX_BOX);
+      p.due = startOfToday() + (from + 1) * DAY;
+      p.box = Math.min(from + 1, MAX_BOX);
     } else {
       p.wrong++;
-      p.box = 0;
-      p.due = now();
+      p.box = Math.max(Math.min(p.box, MAX_BOX) - 1, 0);
+      p.due = startOfToday() + DAY;
     }
     p.seen++;
     p.updated = now();
@@ -1088,9 +1093,8 @@
       .filter(c => !q || noAccent(norm(c.it + ' ' + c.de)).includes(q))
       .sort((a, b) => a.lesson.localeCompare(b.lesson, 'de', { numeric: true }) || (a.created || 0) - (b.created || 0));
     const dots = c => {
-      const b = Math.max(prog(c.id, 'de-it')?.box || 0, 0) + Math.max(prog(c.id, 'it-de')?.box || 0, 0);
-      const n = Math.min(5, Math.round(b / 2));
-      return `<div class="dots" title="Lernstand">${[0, 1, 2, 3, 4].map(i => `<i class="${i < n ? 'on' : ''}"></i>`).join('')}</div>`;
+      const n = Math.min(MAX_BOX, Math.max(prog(c.id, 'de-it')?.box || 0, prog(c.id, 'it-de')?.box || 0));
+      return `<div class="dots" title="Fach ${n} von ${MAX_BOX}">${[1, 2, 3, 4].map(i => `<i class="${i <= n ? 'on' : ''}"></i>`).join('')}</div>`;
     };
     $('#vocabList').innerHTML = list.length
       ? `<div class="small muted" style="margin-bottom:4px">${plural(list.length, 'Vokabel', 'Vokabeln')}</div>` + list.map(c => `
@@ -1237,7 +1241,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.2.2</p>`;
+      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.3</p>`;
 
     Push.paint();
     const f = $('#loginForm');
@@ -1421,5 +1425,5 @@
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
   // Fürs Testen in der Konsole
-  window.__italiano = { get state() { return state; }, checkAnswer, parseLine, Exams, dayDiff, addDays, targetReps };
+  window.__italiano = { get state() { return state; }, checkAnswer, parseLine, Exams, dayDiff, addDays, targetReps, grade };
 })();
