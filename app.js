@@ -803,7 +803,7 @@
   let route = 'home';
   let ui = { vocabLesson: '', vocabSearch: '', editId: null, formLesson: '', importLesson: '', importText: '', examId: null, examDraft: null, examSearch: '' };
 
-  function setTitle(t) { $('#title').textContent = t; document.title = t === 'Avanti' ? 'Avanti Italiano' : t + ' · Avanti'; }
+  function setTitle(t) { $('#title').textContent = t; document.title = t === 'Avanti Italiano' ? t : t + ' · Avanti Italiano'; }
 
   function go(r, params = {}) {
     route = r;
@@ -825,7 +825,7 @@
 
   // ---------- Start ----------
   function viewHome(v) {
-    setTitle('Avanti');
+    setTitle('Avanti Italiano');
     const st = state.settings;
     const { due, fresh } = pool(st.lessons, st.dir);
     const newCount = Math.min(fresh.length, newLeftToday());
@@ -1237,7 +1237,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.2.1</p>`;
+      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.2.2</p>`;
 
     Push.paint();
     const f = $('#loginForm');
