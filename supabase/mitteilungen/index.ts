@@ -14,7 +14,6 @@ const serverHeaders = (): Record<string, string> => SK.startsWith('sb_') ? { api
 const SUBJECT = 'https://zwergkanikl.github.io/italiano/';
 const DAILY_HOUR = 7;
 const STREAK_HOUR = 20;
-const NEW_PER_DAY = 10;
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -163,7 +162,6 @@ function dailyMessage(data: any) {
       else if (dir === 'de-it' && (!p || !p.seen)) fresh++;
     }
   }
-  fresh = Math.min(fresh, NEW_PER_DAY);
   if (!due && !fresh) return null;
   const body = due
     ? `${due} ${due === 1 ? 'Vokabel ist' : 'Vokabeln sind'} fällig${fresh ? ` + ${fresh} neue` : ''}. Avanti! 💪`

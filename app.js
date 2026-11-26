@@ -37,7 +37,7 @@
     cards: {},      // id -> {id, it, de, lesson, note, created, updated, deleted}
     progress: {},   // "id|dir" -> {box, due, seen, right, wrong, updated}
     days: {},       // "JJJJ-MM-TT" -> {reviews, correct, new}
-    settings: { newPerDay: 10, sessionSize: 20, lessons: [], dir: 'de-it', mode: 'mix' },
+    settings: { sessionSize: 20, lessons: [], dir: 'de-it', mode: 'mix' },
     exams: {},      // id -> {id, title, date, lessons, cardIds, dir, notify, target, reps, planCounts, created, updated, deleted}
     seeded: false
   });
@@ -113,7 +113,6 @@
     return { due, fresh };
   }
 
-  const newLeftToday = () => Math.max(0, state.settings.newPerDay - (state.days[today()]?.new || 0));
 
   function grade(card, dir, correct) {
     const k = pkey(card.id, dir);
@@ -474,6 +473,7 @@
         cur: null,
         practice: !!opts.practice,
         exam: opts.exam || null,
+        random: !!opts.random,
         mode: opts.mode
       };
       document.body.classList.add('in-session');
@@ -535,7 +535,13 @@
       if (!S.done.has(k)) {
         S.done.add(k);
         const p = prog(it.card.id, it.dir);
-        if (S.practice && S.cur.ok && p && p.seen && p.due > now()) { const ds = dayStats(); ds.reviews++; ds.correct++; ds.updated = now(); }
+        if (S.random && p && p.seen) {
+          // Zufällig üben: richtig → nichts ändert sich, falsch → Fach 1, morgen wieder
+          const ds = dayStats(); ds.reviews++; ds.updated = now();
+          if (S.cur.ok) ds.correct++;
+          else { p.box = 1; p.due = startOfToday() + DAY; p.wrong++; p.seen++; p.updated = now(); }
+        }
+        else if (S.practice && S.cur.ok && p && p.seen && p.due > now()) { const ds = dayStats(); ds.reviews++; ds.correct++; ds.updated = now(); }
         else grade(it.card, it.dir, S.cur.ok);
         S.results.push({ card: it.card, dir: it.dir, ok: S.cur.ok });
         if (S.exam && state.exams[S.exam]) Exams.record(state.exams[S.exam], it.card.id, S.cur.ok);
@@ -679,7 +685,7 @@
       's-override': () => { S.cur.ok = true; S.cur.hint = 'Als richtig gewertet.'; S.cur.close = false; draw(); },
       's-next': () => commitAndNext(),
       's-stop': () => stop(),
-      's-again': () => { const items = S.lastWrong, exam = S.exam, mode = S.mode || state.settings.mode; S = null; start(shuffle(items), { mode, exam, practice: !!exam }); }
+      's-again': () => { const items = S.lastWrong, exam = S.exam, random = S.random, mode = S.mode || state.settings.mode; S = null; start(shuffle(items), { mode, exam, random, practice: !!exam || random }); }
     };
 
     function key(e) {
@@ -794,19 +800,25 @@
     const mode = opts.mode || st.mode;
     const { due, fresh } = pool(lessons, dir);
     let items;
-    if (opts.practice) {
+    if (opts.random) {
+      // Zufällig üben: nichts mehr fällig → zufällige Vokabeln aus der Auswahl
+      const want = lessons && lessons.length ? new Set(lessons) : null;
+      items = [];
+      for (const c of activeCards()) if (!want || want.has(c.lesson)) for (const d of dirsFor(dir)) items.push({ card: c, dir: d });
+      items = shuffle(items).slice(0, st.sessionSize);
+    } else if (opts.practice) {
       // im Test-Modus: alle Vokabeln der Auswahl, egal ob fällig
       const want = lessons && lessons.length ? new Set(lessons) : null;
       items = [];
       for (const c of activeCards()) if (!want || want.has(c.lesson)) for (const d of dirsFor(dir)) items.push({ card: c, dir: d });
       shuffle(items);
     } else {
-      items = due.slice(0, st.sessionSize);
-      const room = Math.min(st.sessionSize - items.length, newLeftToday());
-      if (room > 0) items = items.concat(fresh.slice(0, room));
+      // fällige zuerst, dann neue (Fach 0) – kein Tageslimit mehr
+      items = due.concat(fresh).slice(0, st.sessionSize);
+      if (!items.length && opts.randomIfDone) return startLearning(lessons, { ...opts, random: true });
       shuffle(items);
     }
-    Session.start(items, { mode, practice: opts.practice });
+    Session.start(items, { mode, practice: opts.practice || opts.random, random: opts.random });
   }
 
   // ================= Ansichten =================
@@ -838,25 +850,28 @@
     setTitle('Avanti Italiano');
     const st = state.settings;
     const { due, fresh } = pool(st.lessons, st.dir);
-    const newCount = Math.min(fresh.length, newLeftToday());
+    const newCount = fresh.length;
     const ds = state.days[today()] || { reviews: 0 };
     const cards = activeCards();
     let mastered = 0;
     for (const c of cards) for (const d of ['de-it', 'it-de']) if ((prog(c.id, d)?.box || 0) >= MASTER_BOX) mastered++;
     const lessons = lessonMap();
     const scope = st.lessons.length ? plural(st.lessons.length, 'Lektion', 'Lektionen') : 'alle Lektionen';
-    const todo = Math.min(due.length, st.sessionSize) + Math.min(newCount, Math.max(0, st.sessionSize - due.length));
+    const todo = Math.min(due.length + newCount, st.sessionSize);
+    const anyCards = activeCards().some(c => !st.lessons.length || st.lessons.includes(c.lesson));
 
     v.innerHTML = `
       <div class="card hero">
         <div style="font-weight:600;margin-bottom:10px">Ciao${CFG.name ? ' ' + esc(CFG.name) : ''}! 👋</div>
         <div class="row" style="align-items:flex-end;gap:18px">
           <div><div class="big-num">${due.length}</div><div class="muted small">fällig</div></div>
-          <div><div class="big-num" style="font-size:30px">${newCount}</div><div class="muted small">neu heute</div></div>
+          <div><div class="big-num" style="font-size:30px">${newCount}</div><div class="muted small">neu</div></div>
         </div>
         <div class="muted small" style="margin:10px 0 14px">${esc(scope)} · ${esc(DIR_LABEL[st.dir] || 'beide Richtungen')}</div>
         <div class="row">
-          <button class="btn big spacer" data-action="learn-now" ${todo ? '' : 'disabled'}>${todo ? `Jetzt lernen (${todo})` : 'Alles erledigt ✓'}</button>
+          ${todo
+            ? `<button class="btn big spacer" data-action="learn-now">Jetzt lernen (${todo})</button>`
+            : `<button class="btn big spacer" data-action="learn-random" ${anyCards ? '' : 'disabled'}>Alles gelernt ✓ · Zufällig üben 🎲</button>`}
           <button class="btn big ghost" data-action="go" data-to="learn">Auswahl</button>
         </div>
       </div>
@@ -1058,10 +1073,11 @@
         flip: 'Karte umdrehen und selbst bewerten.'
       }[st.mode]}</p>
       <div style="margin-top:22px" class="card">
-        <button class="btn primary block big" data-action="learn-now" ${due.length + Math.min(fresh.length, newLeftToday()) ? '' : 'disabled'}>
-          Lernen: ${due.length} fällig + ${Math.min(fresh.length, newLeftToday())} neu
-        </button>
-        <p class="small muted" style="margin:8px 2px 14px">Das Lernsystem fragt Wörter, die du gut kannst, immer seltener ab.</p>
+        ${due.length + fresh.length
+          ? `<button class="btn primary block big" data-action="learn-now">Lernen: ${due.length} fällig + ${fresh.length} neu</button>
+             <p class="small muted" style="margin:8px 2px 14px">Neue Vokabeln starten in Fach 0. Was du gut kannst, kommt seltener dran.</p>`
+          : `<button class="btn primary block big" data-action="learn-random" ${allCount ? '' : 'disabled'}>Zufällig üben 🎲</button>
+             <p class="small muted" style="margin:8px 2px 14px">Alles gelernt! Hier kommen zufällige Vokabeln. Richtig → bleibt, falsch → Fach 1.</p>`}
         <button class="btn block" data-action="learn-practice" ${allCount ? '' : 'disabled'}>Test-Modus: alle ${allCount} abfragen</button>
         <p class="small muted" style="margin:8px 2px 0">Gut vor einer Ex oder Schulaufgabe: fragt alles aus der Auswahl ab, egal ob fällig.</p>
       </div>`;
@@ -1230,7 +1246,6 @@
 
       <div class="section-title">Lernen</div>
       <div class="card">
-        <label class="field"><span>Neue Vokabeln pro Tag</span><input type="number" min="0" max="100" id="setNew" value="${st.newPerDay}"></label>
         <label class="field" style="margin-bottom:0"><span>Abfragen pro Runde</span><input type="number" min="5" max="200" id="setSize" value="${st.sessionSize}"></label>
       </div>
 
@@ -1246,7 +1261,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.4</p>`;
+      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.5</p>`;
 
     Push.paint();
     const f = $('#loginForm');
@@ -1261,7 +1276,6 @@
       persist();
       toast('Gespeichert');
     });
-    num('#setNew', 'newPerDay', 0, 100);
     num('#setSize', 'sessionSize', 5, 200);
     $('#fileIn').addEventListener('change', async e => {
       const file = e.target.files[0];
@@ -1283,8 +1297,9 @@
   const actions = {
     go: el => go(el.dataset.to),
     speak: el => speak(el.dataset.text),
-    'learn-now': () => startLearning(state.settings.lessons),
-    'learn-lesson': el => startLearning([el.dataset.lesson]),
+    'learn-now': () => startLearning(state.settings.lessons, { randomIfDone: true }),
+    'learn-random': () => startLearning(state.settings.lessons, { random: true }),
+    'learn-lesson': el => startLearning([el.dataset.lesson], { randomIfDone: true }),
     'learn-practice': () => startLearning(state.settings.lessons, { practice: true }),
     set: el => { state.settings[el.dataset.k] = el.dataset.v; persist(); render(); },
     'lesson-all': () => { state.settings.lessons = []; persist(); render(); },
