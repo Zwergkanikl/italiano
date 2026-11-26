@@ -258,7 +258,7 @@ Deno.serve(async req => {
       if (!uid) return json({ error: 'Nicht angemeldet' }, 401);
       const subs: Sub[] = await db(`push_abos?select=*&user_id=eq.${uid}`);
       const data = (await dataFor([uid]))[uid];
-      const m = dailyMessage(data) || { title: 'Italiano 🇮🇹', body: 'Test: Mitteilungen funktionieren!', tag: 'italiano-test' };
+      const m = dailyMessage(data) || { title: 'Avanti 🇮🇹', body: 'Test: Mitteilungen funktionieren!', tag: 'italiano-test' };
       const results = [];
       for (const s of subs) results.push(await send(s, { ...m, title: m.title + ' (Test)' }));
       const em = examMessage(data, localNow(subs[0]?.tz || 'Europe/Berlin').date);

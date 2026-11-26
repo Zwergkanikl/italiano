@@ -1,6 +1,6 @@
 {
-  "name": "Italiano – Vokabeltrainer",
-  "short_name": "Italiano",
+  "name": "Avanti Italiano – Vokabeltrainer",
+  "short_name": "Avanti",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

@@ -1,6 +1,6 @@
 // Service Worker: macht die App offline nutzbar.
 // Strategie: erst Netz (immer aktuell), sonst Cache (offline).
-const CACHE = 'italiano-v2';
+const CACHE = 'italiano-v3';
 const ASSETS = [
   './', 'index.html', 'style.css', 'app.js', 'config.js', 'vokabeln.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'
@@ -36,7 +36,7 @@ self.addEventListener('fetch', e => {
 self.addEventListener('push', e => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch (err) { d = { body: e.data ? e.data.text() : '' }; }
-  e.waitUntil(self.registration.showNotification(d.title || 'Italiano', {
+  e.waitUntil(self.registration.showNotification(d.title || 'Avanti', {
     body: d.body || '',
     icon: 'icons/icon-192.png',
     badge: 'icons/icon-192.png',

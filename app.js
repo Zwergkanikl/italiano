@@ -434,7 +434,7 @@
           ? `<p class="small" style="margin:0">Auf iPhone und iPad gehen Mitteilungen nur in der <b>installierten App</b>: In Safari → Teilen → „Zum Home-Bildschirm“, dann die App vom Home-Bildschirm öffnen und hier einschalten.</p>`
           : `<p class="small muted" style="margin:0">Dieser Browser kann keine Mitteilungen empfangen.</p>`;
       } else if (Notification.permission === 'denied') {
-        html = `<p class="small" style="margin:0">Mitteilungen sind blockiert. Erlaube sie in den Einstellungen deines Geräts bzw. Browsers für Italiano.</p>`;
+        html = `<p class="small" style="margin:0">Mitteilungen sind blockiert. Erlaube sie in den Einstellungen deines Geräts bzw. Browsers für Avanti.</p>`;
       } else if (!(await current())) {
         html = `<p class="small muted" style="margin-top:0">Erinnerung um 7:00 Uhr, wenn Vokabeln fällig sind, und um 20:00 Uhr, wenn dein Streak in Gefahr ist.</p>
           <button class="btn primary block" data-action="push-on">🔔 Mitteilungen einschalten</button>`;
@@ -803,7 +803,7 @@
   let route = 'home';
   let ui = { vocabLesson: '', vocabSearch: '', editId: null, formLesson: '', importLesson: '', importText: '', examId: null, examDraft: null, examSearch: '' };
 
-  function setTitle(t) { $('#title').textContent = t; document.title = t === 'Italiano' ? 'Italiano' : t + ' · Italiano'; }
+  function setTitle(t) { $('#title').textContent = t; document.title = t === 'Avanti' ? 'Avanti Italiano' : t + ' · Avanti'; }
 
   function go(r, params = {}) {
     route = r;
@@ -825,7 +825,7 @@
 
   // ---------- Start ----------
   function viewHome(v) {
-    setTitle('Italiano');
+    setTitle('Avanti');
     const st = state.settings;
     const { due, fresh } = pool(st.lessons, st.dir);
     const newCount = Math.min(fresh.length, newLeftToday());
@@ -1237,7 +1237,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Italiano · Version 1.2</p>`;
+      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.2.1</p>`;
 
     Push.paint();
     const f = $('#loginForm');
