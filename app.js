@@ -998,7 +998,6 @@
             : anyCards
               ? `<button class="btn big spacer" data-action="learn-random">Alles gelernt ✓ · Zufällig üben 🎲</button>`
               : `<button class="btn big spacer" data-action="go" data-to="scan">📷 Vokabeln hinzufügen</button>`}
-          <button class="btn big ghost" data-action="go" data-to="learn">Auswahl</button>
         </div>
       </div>
       <div class="stats">
@@ -1482,7 +1481,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.6</p>`;
+      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.6.1</p>`;
 
     Push.paint();
     const f = $('#loginForm');
