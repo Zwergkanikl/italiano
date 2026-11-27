@@ -38,6 +38,8 @@
     progress: {},   // "id|dir" -> {box, due, seen, right, wrong, updated}
     days: {},       // "JJJJ-MM-TT" -> {reviews, correct, new}
     settings: { sessionSize: 20, lessons: [], dir: 'de-it', mode: 'mix' },
+    gtopics: {},    // Grammatik-Themen: id -> {id, title, lesson, explanation, created, updated, deleted}
+    gitems: {},     // Grammatik-Übungen: id -> {id, topicId, type: gap|choice|translate, prompt, answer, options, hint, created, updated, deleted}
     exams: {},      // id -> {id, title, date, lessons, cardIds, dir, notify, target, reps, planCounts, created, updated, deleted}
     seeded: false
   });
@@ -97,17 +99,32 @@
 
   const dirsFor = dir => dir === 'both' ? ['de-it', 'it-de'] : [dir];
 
-  // Fällige und neue Abfragen für eine Auswahl von Lektionen
-  function pool(lessons, dir) {
-    const t = now(), due = [], fresh = [];
+  // ---------- Grammatik als "Karten" ----------
+  const activeTopics = () => Object.values(state.gtopics || {}).filter(t => !t.deleted);
+  const activeGItems = (topicId) => Object.values(state.gitems || {}).filter(i => !i.deleted && state.gtopics[i.topicId] && !state.gtopics[i.topicId].deleted && (!topicId || i.topicId === topicId));
+  // Übung → kartenähnliches Objekt für die Abfrage (Frage = "de", Lösung = "it")
+  function gCard(i) {
+    const t = state.gtopics[i.topicId] || {};
+    return { id: 'g:' + i.id, de: i.prompt, it: i.answer, note: i.hint || '', lesson: t.lesson || '', grammar: true, topicId: i.topicId, gtype: i.type, options: i.options || [] };
+  }
+  const allLessons = () => [...new Set([...lessonMap().keys(), ...activeTopics().map(t => t.lesson).filter(Boolean)])]
+    .sort((a, b) => a.localeCompare(b, 'de', { numeric: true }));
+  // Alle lernbaren Einheiten der Auswahl; content: vocab | grammar | both
+  function learnables(lessons, dir, content = state.settings.content || 'vocab') {
     const want = lessons && lessons.length ? new Set(lessons) : null;
-    for (const c of activeCards()) {
-      if (want && !want.has(c.lesson)) continue;
-      for (const d of dirsFor(dir)) {
-        const p = prog(c.id, d);
-        if (!p || !p.seen) fresh.push({ card: c, dir: d });
-        else if (p.due <= t) due.push({ card: c, dir: d, due: p.due });
-      }
+    const out = [];
+    if (content !== 'grammar') for (const c of activeCards()) if (!want || want.has(c.lesson)) for (const d of dirsFor(dir)) out.push({ card: c, dir: d });
+    if (content !== 'vocab') for (const i of activeGItems()) { const g = gCard(i); if (!want || want.has(g.lesson)) out.push({ card: g, dir: 'de-it' }); }
+    return out;
+  }
+
+  // Fällige und neue Abfragen für eine Auswahl von Lektionen
+  function pool(lessons, dir, content) {
+    const t = now(), due = [], fresh = [];
+    for (const it of learnables(lessons, dir, content)) {
+      const p = prog(it.card.id, it.dir);
+      if (!p || !p.seen) fresh.push(it);
+      else if (p.due <= t) due.push({ ...it, due: p.due });
     }
     due.sort((a, b) => a.due - b.due);
     return { due, fresh };
@@ -161,6 +178,10 @@
         updated: Math.max(l.updated || 0, v.updated || 0)
       };
     }
+    for (const key of ['gtopics', 'gitems']) {
+      out[key] = { ...(local[key] || {}) };
+      for (const [k, v] of Object.entries(remote[key] || {})) out[key][k] = newer(out[key][k], v);
+    }
     out.exams = { ...(local.exams || {}) };
     for (const [k, v] of Object.entries(remote.exams || {})) out.exams[k] = newer(out.exams[k], v);
     out.seeded = local.seeded || remote.seeded;
@@ -188,9 +209,18 @@
   }
 
   // Ergebnis: {ok, hint}
-  function checkAnswer(input, answer, lang) {
+  function checkAnswer(input, answer, lang, strict = false) {
     const inp = norm(input);
     if (!inp) return { ok: false };
+    if (strict) {
+      // Grammatik: Artikel & Endungen zählen – nur Akzentfehler werden verziehen
+      for (const v of variants(answer)) {
+        if (inp === v) return { ok: true };
+        if (noAccent(inp) === noAccent(v)) return { ok: true, hint: `Achte auf den Akzent: ${v}` };
+      }
+      for (const v of variants(answer)) if (v.length >= 4 && lev(noAccent(inp), noAccent(v)) === 1) return { ok: false, close: true };
+      return { ok: false };
+    }
     const art = lang === 'it' ? IT_ART : DE_ART;
     for (const v of variants(answer)) {
       if (inp === v) return { ok: true };
@@ -605,6 +635,7 @@
     }
 
     function pickMode(it, mode) {
+      if (it.card.grammar) return it.card.gtype === 'choice' ? 'choice' : (mode === 'flip' ? 'flip' : 'type');
       if (mode === 'mix') {
         const p = prog(it.card.id, it.dir);
         return (!p || p.box < 2) ? 'choice' : 'type';
@@ -616,9 +647,10 @@
       if (!S.queue.length) { S.phase = 'end'; draw(); return; }
       const it = S.queue[0];
       S.cur = { ...it, answered: false, ok: null, input: '', hint: '', close: false };
+      S.showRule = false;
       if (it.mode === 'choice') {
-        S.cur.options = buildOptions(it);
-        if (!S.cur.options) S.cur.mode = 'type';
+        S.cur.options = it.card.grammar ? shuffle(it.card.options.slice()) : buildOptions(it);
+        if (!S.cur.options || S.cur.options.length < 2) S.cur.mode = 'type';
       }
       S.phase = 'ask';
       draw();
@@ -721,7 +753,7 @@
       if (it.answered && it.mode !== 'flip') {
         const sol = answerOf(it);
         fb = it.ok
-          ? `<div class="feedback ok"><div class="title">Richtig!</div>${it.hint ? `<div>${esc(it.hint)}</div>` : ''}${it.mode !== 'choice' && norm(it.input) !== norm(sol) ? `<div class="small muted">Lösung: ${esc(sol)}</div>` : ''}</div>`
+          ? `<div class="feedback ok"><div class="title">Richtig!</div>${it.hint ? `<div>${esc(it.hint)}</div>` : ''}${it.mode !== 'choice' && !variants(sol).includes(norm(it.input)) ? `<div class="small muted">Lösung: ${esc(sol)}</div>` : ''}</div>`
           : `<div class="feedback bad"><div class="title">${it.close ? 'Fast! Kleiner Fehler.' : 'Leider falsch'}</div><div class="solution">${esc(sol)}</div>
               ${it.mode === 'type' && it.input ? `<button class="btn small" style="margin-top:8px" data-action="s-override">Ich hatte recht</button>` : ''}</div>`;
       }
@@ -740,10 +772,12 @@
           <span class="small muted">${S.done.size}/${S.total}</span>
         </div>
         <div class="card prompt-card">
-          <div class="prompt-label">${DIR_LABEL[it.dir]}${isNew ? '<span class="new-badge">NEU</span>' : ''}</div>
+          <div class="prompt-label">${it.card.grammar ? '📘 ' + esc(state.gtopics[it.card.topicId]?.title || 'Grammatik') : DIR_LABEL[it.dir]}${isNew ? '<span class="new-badge">NEU</span>' : ''}</div>
           <div class="prompt">${esc(promptOf(it))}</div>
           ${it.card.note && (it.answered || it.dir === 'de-it') ? `<div class="prompt-note">${esc(it.card.note)}</div>` : ''}
           ${promptIsIt ? `<button class="speak" data-action="speak" data-text="${esc(it.card.it)}" aria-label="Vorlesen">🔊</button>` : ''}
+          ${it.card.grammar && state.gtopics[it.card.topicId]?.explanation ? `<div><button class="btn small" style="margin-top:10px" data-action="s-rule">💡 ${S.showRule ? 'Regel ausblenden' : 'Regel zeigen'}</button></div>
+            ${S.showRule ? `<div class="rule-box">${mdLite(state.gtopics[it.card.topicId].explanation)}</div>` : ''}` : ''}
           ${it.mode === 'flip' && it.answered ? `<div class="reveal">${esc(answerOf(it))}
             ${!promptIsIt ? `<div><button class="speak" data-action="speak" data-text="${esc(it.card.it)}">🔊</button></div>` : ''}</div>` : ''}
         </div>
@@ -789,7 +823,7 @@
         const inp = $('#answer');
         const val = inp ? inp.value : S.cur.input;
         if (!norm(val)) { toast('Erst etwas eintippen – oder „Weiß ich nicht“'); return; }
-        const r = checkAnswer(val, answerOf(S.cur), S.cur.dir === 'de-it' ? 'it' : 'de');
+        const r = checkAnswer(val, answerOf(S.cur), S.cur.dir === 'de-it' ? 'it' : 'de', !!S.cur.card.grammar);
         answer(r.ok, { input: val, hint: r.hint || '', close: !!r.close });
       },
       's-skip': () => answer(false, { input: '' }),
@@ -809,6 +843,7 @@
       's-override': () => { S.cur.ok = true; S.cur.hint = 'Als richtig gewertet.'; S.cur.close = false; draw(); },
       's-next': () => commitAndNext(),
       's-stop': () => stop(),
+      's-rule': () => { S.showRule = !S.showRule; draw(); },
       's-again': () => { const items = S.lastWrong, exam = S.exam, random = S.random, mode = S.mode || state.settings.mode; S = null; start(shuffle(items), { mode, exam, random, practice: !!exam || random }); }
     };
 
@@ -922,20 +957,14 @@
     const st = state.settings;
     const dir = opts.dir || st.dir;
     const mode = opts.mode || st.mode;
-    const { due, fresh } = pool(lessons, dir);
+    const { due, fresh } = pool(lessons, dir, opts.content);
     let items;
     if (opts.random) {
-      // Zufällig üben: nichts mehr fällig → zufällige Vokabeln aus der Auswahl
-      const want = lessons && lessons.length ? new Set(lessons) : null;
-      items = [];
-      for (const c of activeCards()) if (!want || want.has(c.lesson)) for (const d of dirsFor(dir)) items.push({ card: c, dir: d });
-      items = shuffle(items).slice(0, st.sessionSize);
+      // Zufällig üben: nichts mehr fällig → zufällige Einheiten aus der Auswahl
+      items = shuffle(learnables(lessons, dir, opts.content)).slice(0, st.sessionSize);
     } else if (opts.practice) {
-      // im Test-Modus: alle Vokabeln der Auswahl, egal ob fällig
-      const want = lessons && lessons.length ? new Set(lessons) : null;
-      items = [];
-      for (const c of activeCards()) if (!want || want.has(c.lesson)) for (const d of dirsFor(dir)) items.push({ card: c, dir: d });
-      shuffle(items);
+      // im Test-Modus: alles aus der Auswahl, egal ob fällig
+      items = shuffle(learnables(lessons, dir, opts.content));
     } else {
       // fällige zuerst, dann neue (Fach 0) – kein Tageslimit mehr
       items = due.concat(fresh).slice(0, st.sessionSize);
@@ -961,10 +990,10 @@
 
   function render() {
     if (Session.active()) return; // Session zeichnet sich selbst
-    const tab = { edit: 'vocab', import: 'vocab', scan: 'vocab', exam: 'exams', examEdit: 'exams' }[route] || route;
+    const tab = { edit: 'vocab', import: 'vocab', scan: 'vocab', gtopic: 'vocab', gimport: 'vocab', exam: 'exams', examEdit: 'exams' }[route] || route;
     $$('#tabbar button').forEach(b => b.classList.toggle('active', b.dataset.to === tab));
     const v = $('#view');
-    const views = { home: viewHome, learn: viewLearn, vocab: viewVocab, edit: viewEdit, import: viewImport, more: viewMore, exams: viewExams, exam: viewExam, examEdit: viewExamEdit, scan: viewScan };
+    const views = { home: viewHome, learn: viewLearn, vocab: viewVocab, edit: viewEdit, import: viewImport, more: viewMore, exams: viewExams, exam: viewExam, examEdit: viewExamEdit, scan: viewScan, gtopic: viewGTopic, gimport: viewGImport };
     (views[route] || viewHome)(v);
     Sync.paint();
   }
@@ -982,7 +1011,7 @@
     const lessons = lessonMap();
     const scope = st.lessons.length ? plural(st.lessons.length, 'Lektion', 'Lektionen') : 'alle Lektionen';
     const todo = Math.min(due.length + newCount, st.sessionSize);
-    const anyCards = activeCards().some(c => !st.lessons.length || st.lessons.includes(c.lesson));
+    const anyCards = learnables(st.lessons, st.dir).length > 0;
 
     v.innerHTML = `
       <div class="card hero">
@@ -991,7 +1020,7 @@
           <div><div class="big-num">${due.length}</div><div class="muted small">fällig</div></div>
           <div><div class="big-num" style="font-size:30px">${newCount}</div><div class="muted small">neu</div></div>
         </div>
-        <div class="muted small" style="margin:10px 0 14px">${esc(scope)} · ${esc(DIR_LABEL[st.dir] || 'beide Richtungen')}</div>
+        <div class="muted small" style="margin:10px 0 14px">${{ vocab: 'Vokabeln', grammar: 'Grammatik', both: 'Vokabeln + Grammatik' }[st.content || 'vocab']} · ${esc(scope)}${(st.content || 'vocab') !== 'grammar' ? ' · ' + esc(DIR_LABEL[st.dir] || 'beide Richtungen') : ''}</div>
         <div class="row">
           ${todo
             ? `<button class="btn big spacer" data-action="learn-now">Jetzt lernen (${todo})</button>`
@@ -1173,13 +1202,16 @@
   function viewLearn(v) {
     setTitle('Lernen');
     const st = state.settings;
-    const lessons = [...lessonMap().keys()];
+    if (!st.content) st.content = 'vocab';
+    const lessons = allLessons();
     const sel = new Set(st.lessons.filter(l => lessons.includes(l)));
     const { due, fresh } = pool([...sel], st.dir);
     const seg = (name, val, label) => `<button class="${st[name] === val ? 'on' : ''}" data-action="set" data-k="${name}" data-v="${val}">${label}</button>`;
-    const allCount = activeCards().filter(c => !sel.size || sel.has(c.lesson)).length * dirsFor(st.dir).length;
+    const allCount = learnables([...sel], st.dir).length;
 
     v.innerHTML = `
+      <div class="section-title">Was lernen?</div>
+      <div class="seg">${seg('content', 'vocab', 'Vokabeln')}${seg('content', 'grammar', 'Grammatik')}${seg('content', 'both', 'Beides')}</div>
       <div class="section-title">Lektionen</div>
       <div class="card">
         <div class="chips">
@@ -1200,21 +1232,219 @@
       <div style="margin-top:22px" class="card">
         ${due.length + fresh.length
           ? `<button class="btn primary block big" data-action="learn-now">Lernen: ${due.length} fällig + ${fresh.length} neu</button>
-             <p class="small muted" style="margin:8px 2px 14px">Neue Vokabeln starten in Fach 0. Was du gut kannst, kommt seltener dran.</p>`
+             <p class="small muted" style="margin:8px 2px 14px">Neues startet in Fach 0. Was du gut kannst, kommt seltener dran.</p>`
           : `<button class="btn primary block big" data-action="learn-random" ${allCount ? '' : 'disabled'}>Zufällig üben 🎲</button>
-             <p class="small muted" style="margin:8px 2px 14px">Alles gelernt! Hier kommen zufällige Vokabeln. Richtig → bleibt, falsch → Fach 1.</p>`}
+             <p class="small muted" style="margin:8px 2px 14px">Alles gelernt! Hier kommt Zufälliges aus deiner Auswahl. Richtig → bleibt, falsch → Fach 1.</p>`}
         <button class="btn block" data-action="learn-practice" ${allCount ? '' : 'disabled'}>Test-Modus: alle ${allCount} abfragen</button>
         <p class="small muted" style="margin:8px 2px 0">Gut vor einer Ex oder Schulaufgabe: fragt alles aus der Auswahl ab, egal ob fällig.</p>
       </div>`;
   }
 
+
+  // ---------- Grammatik ----------
+  // Mini-Markdown für Erklärungen: Absätze, Listen mit "- ", **fett**, Tabellenzeilen mit "|"
+  function mdLite(text) {
+    const inline = t => esc(t).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/(^|\s)_(.+?)_(?=\s|$)/g, '$1<i>$2</i>');
+    const out = [];
+    let list = null, table = null;
+    const flush = () => { if (list) { out.push('<ul>' + list.join('') + '</ul>'); list = null; } if (table) { out.push('<table>' + table.join('') + '</table>'); table = null; } };
+    for (const raw of String(text || '').split(/\r?\n/)) {
+      const l = raw.trim();
+      if (!l) { flush(); continue; }
+      if (/^[-*•]\s+/.test(l)) { if (table) flush(); (list ||= []).push('<li>' + inline(l.replace(/^[-*•]\s+/, '')) + '</li>'); continue; }
+      if (l.includes('|') && !/^\|?\s*-{2,}/.test(l)) { if (list) flush(); (table ||= []).push('<tr>' + l.replace(/^\||\|$/g, '').split('|').map(c => '<td>' + inline(c.trim()) + '</td>').join('') + '</tr>'); continue; }
+      if (/^\|?\s*-{2,}/.test(l)) continue;
+      flush();
+      out.push('<p>' + inline(l) + '</p>');
+    }
+    flush();
+    return out.join('');
+  }
+
+  // Grammatik-Paket lesen. Rückgabe: {topics: [{title, lesson, explanation, items: [...]}], errors: [], skipped: []}
+  const GTYPES = { 'lücke': 'gap', 'luecke': 'gap', 'gap': 'gap', 'wahl': 'choice', 'auswahl': 'choice', 'choice': 'choice', 'übersetze': 'translate', 'uebersetze': 'translate', 'übersetzen': 'translate', 'translate': 'translate' };
+  const GLATER = ['ordne', 'konjugiere', 'konjugation'];
+  function parsePack(text, defaultLesson = '') {
+    const topics = [], errors = [], skipped = [];
+    let cur = null, section = 'expl';
+    String(text || '').split(/\r?\n/).forEach((raw, n) => {
+      const line = raw.replace(/\s+$/, '');
+      const l = line.trim();
+      if (/^#\s+/.test(l)) { cur = { title: l.replace(/^#\s+/, '').trim(), lesson: defaultLesson, expl: [], items: [] }; topics.push(cur); section = 'expl'; return; }
+      if (!cur) { if (l) errors.push(`Zeile ${n + 1}: Vor der ersten Zeile mit „# Thema“ steht Text.`); return; }
+      const lm = l.match(/^lektion\s*:\s*(.+)$/i);
+      if (lm && section === 'expl' && !cur.items.length) { cur.lesson = lm[1].trim(); return; }
+      if (/^##\s*(erklärung|erklaerung|regel)/i.test(l)) { section = 'expl'; return; }
+      if (/^##\s*(übungen|uebungen|aufgaben)/i.test(l)) { section = 'ex'; return; }
+      if (section === 'expl') { cur.expl.push(line); return; }
+      if (!l) return;
+      const m = l.match(/^([\wäöüÄÖÜ]+)\s*:\s*(.+)$/);
+      if (!m) { errors.push(`Zeile ${n + 1}: „${l.slice(0, 40)}“ – Typ fehlt (z. B. „lücke:“)`); return; }
+      const kind = m[1].toLowerCase(), body = m[2];
+      if (GLATER.includes(kind)) { skipped.push(kind); return; }
+      const type = GTYPES[kind];
+      if (!type) { errors.push(`Zeile ${n + 1}: Unbekannter Typ „${m[1]}“`); return; }
+      const eq = body.lastIndexOf(' = ');
+      if (eq < 0) { errors.push(`Zeile ${n + 1}: Lösung fehlt („ = Lösung“ am Ende)`); return; }
+      let prompt = body.slice(0, eq).trim(); const answer = body.slice(eq + 3).trim();
+      let options = [];
+      if (type === 'choice') {
+        const parts = prompt.split('|').map(x => x.trim()).filter(Boolean);
+        prompt = parts.shift() || '';
+        options = parts;
+        if (!options.some(o => norm(o) === norm(answer))) options.push(answer);
+        if (options.length < 2) { errors.push(`Zeile ${n + 1}: Auswahl braucht mindestens 2 Möglichkeiten`); return; }
+      }
+      if (!prompt || !answer) { errors.push(`Zeile ${n + 1}: Frage oder Lösung leer`); return; }
+      cur.items.push({ type, prompt, answer, options });
+    });
+    for (const t of topics) t.explanation = t.expl.join('\n').trim();
+    return { topics: topics.filter(t => t.title), errors, skipped };
+  }
+
+  function topicStats(t) {
+    const items = activeGItems(t.id), now_ = now();
+    let due = 0, fresh = 0, boxSum = 0;
+    for (const i of items) {
+      const p = prog('g:' + i.id, 'de-it');
+      if (!p || !p.seen) fresh++; else { if (p.due <= now_) due++; boxSum += Math.min(p.box, MAX_BOX); }
+    }
+    return { n: items.length, due, fresh, pct: items.length ? boxSum / (items.length * MAX_BOX) : 0 };
+  }
+
+  function viewGrammar(v) {
+    setTitle('Stoff');
+    const topics = activeTopics();
+    const byLesson = new Map();
+    for (const t of topics.sort((a, b) => (a.lesson || '~').localeCompare(b.lesson || '~', 'de', { numeric: true }) || (a.created || 0) - (b.created || 0))) {
+      const k = t.lesson || 'Ohne Lektion';
+      if (!byLesson.has(k)) byLesson.set(k, []);
+      byLesson.get(k).push(t);
+    }
+    v.innerHTML = `
+      ${stoffSeg()}
+      <button class="btn primary block" style="margin:0 0 14px" data-action="go" data-to="gimport">Grammatik-Paket importieren</button>
+      ${topics.length ? [...byLesson.entries()].map(([lesson, list]) => `
+        <div class="section-title">${esc(lesson)}</div>
+        <div class="card">${list.map(t => { const s2 = topicStats(t); return `
+          <div class="lesson" data-action="gtopic-open" data-id="${esc(t.id)}" style="cursor:pointer">
+            <div class="info">
+              <div class="name">📘 ${esc(t.title)}</div>
+              <div class="small muted">${plural(s2.n, 'Übung', 'Übungen')}${s2.due ? ` · <b style="color:var(--green)">${s2.due} fällig</b>` : ''}${s2.fresh ? ` · ${s2.fresh} neu` : ''}</div>
+              <div class="bar"><i style="width:${Math.round(s2.pct * 100)}%"></i></div>
+            </div>
+            <button class="btn small" data-action="gtopic-learn" data-id="${esc(t.id)}">Üben</button>
+          </div>`; }).join('')}</div>`).join('')
+        : `<div class="card empty">Noch keine Grammatik.<br>Fotografiere eine Grammatikseite aus deinem Buch und schick sie Claude – du bekommst ein Paket zum Einfügen.</div>`}`;
+  }
+
+  function viewGTopic(v) {
+    const t = state.gtopics[ui.gtopicId];
+    if (!t || t.deleted) { route = 'vocab'; ui.stoff = 'grammar'; return viewGrammar(v); }
+    setTitle(t.title);
+    const items = activeGItems(t.id);
+    const s2 = topicStats(t);
+    const typ = { gap: 'Lücke', choice: 'Auswahl', translate: 'Übersetzen' };
+    v.innerHTML = `
+      <div class="card">
+        <div class="small muted">${esc(t.lesson || 'Ohne Lektion')} · ${plural(s2.n, 'Übung', 'Übungen')}</div>
+        <div class="bar" style="margin:10px 0 14px"><i style="width:${Math.round(s2.pct * 100)}%"></i></div>
+        <div class="row">
+          <button class="btn primary spacer" data-action="gtopic-learn" data-id="${esc(t.id)}">Üben${s2.due + s2.fresh ? ` (${s2.due + s2.fresh})` : ' 🎲'}</button>
+          <button class="btn spacer" data-action="gtopic-all" data-id="${esc(t.id)}">Alle abfragen</button>
+        </div>
+      </div>
+      ${t.explanation ? `<div class="section-title">Regel</div><div class="card rule-box">${mdLite(t.explanation)}</div>` : ''}
+      <div class="section-title">Übungen</div>
+      <div class="card">${items.map(i => `
+        <div class="vocab-item" style="cursor:default">
+          <div class="spacer" style="min-width:0"><div class="small muted">${typ[i.type] || i.type}</div><div>${esc(i.prompt)}</div><div class="it" style="color:var(--green)">${esc(i.answer)}</div></div>
+          <button class="icon-btn" data-action="gitem-delete" data-id="${esc(i.id)}" aria-label="Übung löschen">✕</button>
+        </div>`).join('') || '<div class="empty">Keine Übungen.</div>'}</div>
+      <button class="btn danger block" data-action="gtopic-delete" data-id="${esc(t.id)}">Thema löschen</button>`;
+  }
+
+  const GPACK_EXAMPLE = `# Presente: Verben auf -are
+Lektion: Lektion 3
+## Erklärung
+Regelmäßige Verben auf **-are** (z. B. parlare): Stamm **parl-** + Endung
+io | parlo
+tu | parli
+lui/lei | parla
+noi | parliamo
+voi | parlate
+loro | parlano
+## Übungen
+lücke: Io ___ italiano. (parlare) = parlo
+lücke: Noi ___ a Roma. (abitare) = abitiamo
+lücke: Loro ___ la pizza. (mangiare) = mangiano
+wahl: Tu ___ tedesco? | parli | parla | parlate = parli
+wahl: Voi ___ molto. | studiate | studiano | studi = studiate
+übersetze: Wir sprechen Italienisch. = Parliamo italiano.
+übersetze: Er wohnt in Mailand. = Abita a Milano.; Lui abita a Milano.`;
+
+  function viewGImport(v) {
+    setTitle('Grammatik importieren');
+    const lessons = allLessons();
+    v.innerHTML = `
+      <div class="card">
+        <p style="margin-top:0" class="small">So geht's: Grammatikseite fotografieren → an Claude schicken („Mach mir ein Grammatik-Paket für Avanti“) → das Paket hier einfügen.</p>
+        <label class="field"><span>Lektion (falls nicht im Paket angegeben)</span><input type="text" id="gLesson" list="gLessons" value="${esc(ui.gLesson || '')}" placeholder="z. B. Lektion 3"></label>
+        <datalist id="gLessons">${lessons.map(l => `<option value="${esc(l)}">`).join('')}</datalist>
+        <label class="field"><span>Grammatik-Paket</span><textarea id="gText" placeholder="# Thema …">${esc(ui.gText || '')}</textarea></label>
+        <button class="btn small" data-action="gimport-example">Beispiel-Paket einfügen</button>
+        <div id="gPreview" class="preview"></div>
+        <button class="btn primary block big" style="margin-top:14px" data-action="gimport-do" id="gBtn">Importieren</button>
+      </div>
+      <div class="section-title">Format</div>
+      <div class="card small">
+        <p style="margin-top:0"><code># Titel</code> startet ein Thema, <code>Lektion: …</code> darunter (optional).</p>
+        <p><code>## Erklärung</code> – Text, Listen mit „- “, Tabellen mit „|“.</p>
+        <p style="margin-bottom:0"><code>## Übungen</code> – eine pro Zeile:<br>
+        <code>lücke: Satz mit ___ (Hinweis) = Lösung</code><br>
+        <code>wahl: Satz ___ | A | B | C = Lösung</code><br>
+        <code>übersetze: deutscher Satz = italienischer Satz</code><br>
+        Mehrere richtige Lösungen mit <code>;</code> trennen.</p>
+      </div>`;
+    const upd = () => {
+      ui.gText = $('#gText').value; ui.gLesson = $('#gLesson').value;
+      const r = parsePack(ui.gText, ui.gLesson.trim());
+      const n = r.topics.reduce((a, t) => a + t.items.length, 0);
+      $('#gPreview').innerHTML = ui.gText.trim() ? `
+        <b>${plural(r.topics.length, 'Thema', 'Themen')}, ${plural(n, 'Übung', 'Übungen')} erkannt</b>
+        ${r.topics.map(t => `<div>📘 ${esc(t.title)} <span class="muted">· ${esc(t.lesson || 'ohne Lektion')} · ${t.items.length} Übungen${t.explanation ? ' · mit Regel' : ''}</span></div>`).join('')}
+        ${r.skipped.length ? `<div class="muted">${r.skipped.length} Übung(en) vom Typ ${[...new Set(r.skipped)].join(', ')} kommen erst in Version 1.8/1.9 und werden übersprungen.</div>` : ''}
+        ${r.errors.slice(0, 6).map(e => `<div style="color:var(--red)">${esc(e)}</div>`).join('')}${r.errors.length > 6 ? `<div style="color:var(--red)">… und ${r.errors.length - 6} weitere Fehler</div>` : ''}` : '';
+      $('#gBtn').disabled = !n;
+    };
+    $('#gText').addEventListener('input', upd);
+    $('#gLesson').addEventListener('input', upd);
+    upd();
+  }
+
+  function startGrammar(topicId, all = false) {
+    const items = activeGItems(topicId).map(i => ({ card: gCard(i), dir: 'de-it' }));
+    const t = now();
+    const open = items.filter(it => { const p = prog(it.card.id, 'de-it'); return !p || !p.seen || p.due <= t; });
+    const st = state.settings;
+    if (all) return Session.start(shuffle(items), { mode: st.mode, practice: true });
+    if (open.length) return Session.start(shuffle(open).slice(0, st.sessionSize), { mode: st.mode });
+    Session.start(shuffle(items).slice(0, st.sessionSize), { mode: st.mode, practice: true, random: true });
+  }
+
   // ---------- Vokabelliste ----------
+  const stoffSeg = () => `<div class="seg" style="margin:6px 0 14px">
+      <button class="${ui.stoff !== 'grammar' ? 'on' : ''}" data-action="stoff" data-v="vocab">Vokabeln</button>
+      <button class="${ui.stoff === 'grammar' ? 'on' : ''}" data-action="stoff" data-v="grammar">Grammatik</button></div>`;
+
   function viewVocab(v) {
-    setTitle('Vokabeln');
+    if (ui.stoff === 'grammar') return viewGrammar(v);
+    setTitle('Stoff');
     const lessons = [...lessonMap().keys()];
     if (ui.vocabLesson && !lessons.includes(ui.vocabLesson)) ui.vocabLesson = '';
     v.innerHTML = `
-      <button class="btn primary block" style="margin:6px 0 10px" data-action="go" data-to="scan">📷 Foto scannen</button>
+      ${stoffSeg()}
+      <button class="btn primary block" style="margin:0 0 10px" data-action="go" data-to="scan">📷 Foto scannen</button>
       <div class="row" style="margin:0 0 12px">
         <button class="btn spacer" data-action="new-card">+ Neue Vokabel</button>
         <button class="btn spacer" data-action="go" data-to="import">Liste importieren</button>
@@ -1481,7 +1711,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.6.1</p>`;
+      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.7</p>`;
 
     Push.paint();
     const f = $('#loginForm');
@@ -1530,6 +1760,45 @@
       persist(); render();
     },
     'new-card': () => go('edit', { editId: null }),
+    'stoff': el => { ui.stoff = el.dataset.v; render(); },
+    'gtopic-open': el => go('gtopic', { gtopicId: el.dataset.id }),
+    'gtopic-learn': el => startGrammar(el.dataset.id),
+    'gtopic-all': el => startGrammar(el.dataset.id, true),
+    'gtopic-delete': el => {
+      const t = state.gtopics[el.dataset.id];
+      if (!t || !confirm(`Thema „${t.title}“ mit allen Übungen löschen?`)) return;
+      const ts = now();
+      t.deleted = true; t.updated = ts;
+      for (const i of Object.values(state.gitems)) if (i.topicId === t.id && !i.deleted) { i.deleted = true; i.updated = ts; }
+      save(); toast('Thema gelöscht'); ui.stoff = 'grammar'; go('vocab');
+    },
+    'gitem-delete': el => {
+      const i = state.gitems[el.dataset.id];
+      if (!i || !confirm('Diese Übung löschen?')) return;
+      i.deleted = true; i.updated = now(); save(); render();
+    },
+    'gimport-example': () => { const ta = $('#gText'); ta.value = GPACK_EXAMPLE; ta.dispatchEvent(new Event('input')); },
+    'gimport-do': () => {
+      const r = parsePack(ui.gText, (ui.gLesson || '').trim());
+      let nT = 0, nI = 0; const ts = now();
+      for (const pt of r.topics) {
+        if (!pt.items.length && !pt.explanation) continue;
+        let t = activeTopics().find(x => norm(x.title) === norm(pt.title) && (x.lesson || '') === (pt.lesson || ''));
+        if (!t) { const id = uid(); t = state.gtopics[id] = { id, title: pt.title, lesson: pt.lesson || '', explanation: pt.explanation, created: ts + nT, updated: ts }; nT++; }
+        else if (pt.explanation) { t.explanation = pt.explanation; t.updated = ts; }
+        const have = new Set(activeGItems(t.id).map(i => norm(i.prompt)));
+        for (const it of pt.items) {
+          if (have.has(norm(it.prompt))) continue;
+          const id = uid();
+          state.gitems[id] = { id, topicId: t.id, type: it.type, prompt: it.prompt, answer: it.answer, options: it.options, hint: '', created: ts + nI, updated: ts };
+          have.add(norm(it.prompt)); nI++;
+        }
+      }
+      save();
+      ui.gText = '';
+      toast(`${plural(nI, 'Übung', 'Übungen')} importiert${nT ? ` (${plural(nT, 'neues Thema', 'neue Themen')})` : ''}`);
+      ui.stoff = 'grammar'; go('vocab');
+    },
     'scan-drop': el => { scanState().pages.splice(+el.dataset.p, 1); render(); },
     'scan-all': () => {
       const rows = scanState().pages.flatMap(pg => pg.rows);
@@ -1701,5 +1970,5 @@
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
   // Fürs Testen in der Konsole
-  window.__italiano = { get state() { return state; }, checkAnswer, parseLine, Exams, dayDiff, addDays, targetReps, grade, Scan, scanFiles };
+  window.__italiano = { get state() { return state; }, checkAnswer, parseLine, Exams, dayDiff, addDays, targetReps, grade, Scan, scanFiles, parsePack, mdLite, learnables };
 })();

@@ -270,3 +270,14 @@ label.btn { cursor: pointer; }
 .scan-import { padding: 10px 12px; }
 .scan-import input { flex: 1; min-width: 0; }
 .scan-import .btn { flex-shrink: 0; }
+
+/* ---------- Grammatik ---------- */
+.rule-box { text-align: left; font-size: 15px; background: var(--surface-2); border-radius: 12px; padding: 12px 14px; margin-top: 12px; }
+.card.rule-box { background: var(--surface); margin-top: 0; }
+.rule-box p { margin: 0 0 8px; }
+.rule-box p:last-child { margin-bottom: 0; }
+.rule-box ul { margin: 0 0 8px; padding-left: 20px; }
+.rule-box table { border-collapse: collapse; margin: 4px 0 8px; }
+.rule-box td { padding: 4px 14px 4px 0; border-bottom: 1px solid var(--line); }
+.rule-box td:first-child { color: var(--muted); }
+code { background: var(--surface-2); border-radius: 5px; padding: 1px 5px; font-size: 13px; }
