@@ -1,6 +1,6 @@
 // Service Worker: macht die App offline nutzbar.
 // Strategie: erst Netz (immer aktuell), sonst Cache (offline).
-const CACHE = 'italiano-v4';
+const CACHE = 'italiano-v5';
 const ASSETS = [
   './', 'index.html', 'style.css', 'app.js', 'config.js', 'vokabeln.js',
   'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png'

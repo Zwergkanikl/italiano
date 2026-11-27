@@ -254,3 +254,32 @@ textarea { min-height: 180px; resize: vertical; font-family: ui-monospace, Menlo
 .pick-list .check { padding: 8px 0; }
 .tabbar button { min-width: 0; }
 .tabbar span { white-space: nowrap; }
+
+/* ---------- Buchseiten ---------- */
+.page-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); gap: 10px; margin-bottom: 14px; }
+.page-thumb {
+  position: relative; padding: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+  background: var(--surface-2); aspect-ratio: 3 / 4; cursor: pointer; box-shadow: var(--shadow);
+}
+.page-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.page-thumb span {
+  position: absolute; left: 6px; bottom: 6px; background: rgba(0,0,0,.6); color: #fff;
+  font-size: 12px; font-weight: 700; border-radius: 99px; padding: 1px 8px;
+}
+.page-thumb.missing::after, .page-view.missing::after {
+  content: "Bild nicht verfügbar"; position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 12px; color: var(--muted); text-align: center; padding: 6px;
+}
+.page-view {
+  position: relative; min-height: 200px; background: var(--surface-2); border-radius: var(--radius);
+  overflow: auto; -webkit-overflow-scrolling: touch; cursor: zoom-in; max-height: 75vh;
+}
+.page-view img { width: 100%; display: block; }
+.page-view.zoom { cursor: zoom-out; }
+.page-view.zoom img { width: 250%; max-width: none; }
+.page-thumb em {
+  position: absolute; right: 6px; top: 6px; background: rgba(0,0,0,.6); color: #fff;
+  font-size: 11px; font-style: normal; font-weight: 700; border-radius: 99px; padding: 1px 7px;
+}
+.page-thumb em.ok { background: var(--green); }
+.ocr-text { white-space: pre-wrap; font-size: 16px; line-height: 1.55; }
