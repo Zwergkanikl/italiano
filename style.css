@@ -281,3 +281,17 @@ label.btn { cursor: pointer; }
 .rule-box td { padding: 4px 14px 4px 0; border-bottom: 1px solid var(--line); }
 .rule-box td:first-child { color: var(--muted); }
 code { background: var(--surface-2); border-radius: 5px; padding: 1px 5px; font-size: 13px; }
+
+/* ---------- Konjugation ---------- */
+.conj-card { padding: 10px 14px; }
+.conj-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-top: 1px solid var(--line); flex-wrap: wrap; }
+.conj-row:first-child { border-top: 0; }
+.conj-p { width: 58px; flex-shrink: 0; color: var(--muted); font-weight: 600; font-size: 15px; }
+.conj-input { flex: 1; min-width: 140px; padding: 9px 11px !important; font-size: 17px !important; }
+.conj-row.ok .conj-input { border-color: var(--green); background: var(--green-soft); }
+.conj-row.bad .conj-input { border-color: var(--red); background: var(--red-soft); }
+.conj-sol { width: 100%; padding-left: 68px; color: var(--green); font-weight: 700; font-size: 15px; }
+.conj-table { border-collapse: collapse; margin: 4px 0; font-size: 15px; }
+.conj-table td { padding: 3px 14px 3px 0; }
+.conj-table td:first-child { color: var(--muted); width: 58px; }
+.conj-tables { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 16px; }

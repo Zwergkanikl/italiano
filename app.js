@@ -99,12 +99,118 @@
 
   const dirsFor = dir => dir === 'both' ? ['de-it', 'it-de'] : [dir];
 
+
+  // ================= Konjugation =================
+  const PERSONS = ['io', 'tu', 'lui/lei', 'noi', 'voi', 'loro'];
+  const TENSES = { presente: 'Presente', passato: 'Passato prossimo', imperfetto: 'Imperfetto', futuro: 'Futuro' };
+  const IRR_PRES = {
+    essere: 'sono sei è siamo siete sono', avere: 'ho hai ha abbiamo avete hanno', fare: 'faccio fai fa facciamo fate fanno',
+    andare: 'vado vai va andiamo andate vanno', venire: 'vengo vieni viene veniamo venite vengono', stare: 'sto stai sta stiamo state stanno',
+    dare: 'do dai dà diamo date danno', dire: 'dico dici dice diciamo dite dicono', potere: 'posso puoi può possiamo potete possono',
+    volere: 'voglio vuoi vuole vogliamo volete vogliono', dovere: 'devo devi deve dobbiamo dovete devono', sapere: 'so sai sa sappiamo sapete sanno',
+    uscire: 'esco esci esce usciamo uscite escono', bere: 'bevo bevi beve beviamo bevete bevono', rimanere: 'rimango rimani rimane rimaniamo rimanete rimangono',
+    tenere: 'tengo tieni tiene teniamo tenete tengono', salire: 'salgo sali sale saliamo salite salgono', scegliere: 'scelgo scegli sceglie scegliamo scegliete scelgono',
+    piacere: 'piaccio piaci piace piacciamo piacete piacciono', tradurre: 'traduco traduci traduce traduciamo traducete traducono',
+    morire: 'muoio muori muore moriamo morite muoiono', sedere: 'siedo siedi siede sediamo sedete siedono', togliere: 'tolgo togli toglie togliamo togliete tolgono',
+    porre: 'pongo poni pone poniamo ponete pongono', produrre: 'produco produci produce produciamo producete producono'
+  };
+  const IMPF_STEM = { fare: 'fac', dire: 'dic', bere: 'bev', tradurre: 'traduc', produrre: 'produc', porre: 'pon' };
+  const IRR_FUT = {
+    essere: 'sar', avere: 'avr', andare: 'andr', fare: 'far', dare: 'dar', stare: 'star', venire: 'verr', volere: 'vorr', potere: 'potr',
+    dovere: 'dovr', sapere: 'sapr', vedere: 'vedr', vivere: 'vivr', bere: 'berr', rimanere: 'rimarr', tenere: 'terr', dire: 'dir',
+    cadere: 'cadr', tradurre: 'tradurr', produrre: 'produrr', porre: 'porr'
+  };
+  const PART = {
+    essere: 'stato', fare: 'fatto', dire: 'detto', prendere: 'preso', mettere: 'messo', vedere: 'visto', leggere: 'letto', scrivere: 'scritto',
+    aprire: 'aperto', chiudere: 'chiuso', rispondere: 'risposto', chiedere: 'chiesto', bere: 'bevuto', venire: 'venuto', rimanere: 'rimasto',
+    nascere: 'nato', morire: 'morto', scendere: 'sceso', perdere: 'perso', vivere: 'vissuto', correre: 'corso', decidere: 'deciso',
+    offrire: 'offerto', ridere: 'riso', spendere: 'speso', accendere: 'acceso', succedere: 'successo', piacere: 'piaciuto',
+    conoscere: 'conosciuto', vincere: 'vinto', spegnere: 'spento', scegliere: 'scelto', tradurre: 'tradotto', rompere: 'rotto',
+    piangere: 'pianto', dipingere: 'dipinto', produrre: 'prodotto', porre: 'posto', togliere: 'tolto', muovere: 'mosso', soffrire: 'sofferto',
+    discutere: 'discusso', dividere: 'diviso', esprimere: 'espresso', giungere: 'giunto', nascondere: 'nascosto', ottenere: 'ottenuto',
+    raggiungere: 'raggiunto', sorridere: 'sorriso', uccidere: 'ucciso', apparire: 'apparso', coprire: 'coperto', scoprire: 'scoperto'
+  };
+  const ESSERE_VERBS = new Set(['andare', 'venire', 'essere', 'stare', 'arrivare', 'partire', 'tornare', 'ritornare', 'uscire', 'entrare', 'restare',
+    'rimanere', 'nascere', 'morire', 'diventare', 'cadere', 'piacere', 'succedere', 'costare', 'riuscire', 'salire', 'scendere', 'apparire', 'sembrare', 'bastare', 'durare']);
+  const ISC = new Set(['capire', 'finire', 'preferire', 'pulire', 'spedire', 'costruire', 'colpire', 'sparire', 'unire', 'ubbidire', 'suggerire',
+    'restituire', 'tradire', 'impedire', 'fornire', 'gestire', 'guarire', 'proibire', 'inserire', 'garantire', 'reagire', 'stabilire', 'distribuire', 'sostituire', 'definire', 'agire']);
+  const REFL = ['mi', 'ti', 'si', 'ci', 'vi', 'si'];
+
+  // Liefert 6 Formen (io … loro) oder null. Formen können Varianten mit ";" enthalten (z. B. andato/andata).
+  function conjugate(infRaw, tense) {
+    let inf = String(infRaw || '').trim().toLowerCase();
+    const reflexive = /(arsi|ersi|irsi|ursi|orsi)$/.test(inf);
+    if (reflexive) inf = inf.slice(0, -2) + 'e';
+    const end = inf.slice(-3), stem = inf.slice(0, -3);
+    const known = /^[a-zàèéìòù]+(are|ere|ire)$/.test(inf) || IRR_PRES[inf];
+    if (!known || !TENSES[tense]) return null;
+    let forms;
+    if (tense === 'presente') {
+      if (IRR_PRES[inf]) forms = IRR_PRES[inf].split(' ');
+      else if (end === 'are') {
+        const iStem = stem.endsWith('i'), h = /[cg]$/.test(stem) ? 'h' : '';
+        const tu = iStem ? stem : stem + h + 'i';
+        forms = [stem + 'o', tu, stem + 'a', tu + 'amo', stem + 'ate', stem + 'ano'];
+      } else if (end === 'ere') forms = [stem + 'o', stem + 'i', stem + 'e', stem + 'iamo', stem + 'ete', stem + 'ono'];
+      else if (ISC.has(inf)) forms = [stem + 'isco', stem + 'isci', stem + 'isce', stem + 'iamo', stem + 'ite', stem + 'iscono'];
+      else forms = [stem + 'o', stem + 'i', stem + 'e', stem + 'iamo', stem + 'ite', stem + 'ono'];
+    } else if (tense === 'imperfetto') {
+      if (inf === 'essere') forms = 'ero eri era eravamo eravate erano'.split(' ');
+      else if (IMPF_STEM[inf]) forms = ['evo', 'evi', 'eva', 'evamo', 'evate', 'evano'].map(e => IMPF_STEM[inf] + e);
+      else { const vow = { are: 'a', ere: 'e', ire: 'i' }[end]; forms = ['vo', 'vi', 'va', 'vamo', 'vate', 'vano'].map(e => stem + vow + e); }
+    } else if (tense === 'futuro') {
+      let fs = IRR_FUT[inf];
+      if (!fs) {
+        if (end === 'are') fs = (/[cg]i$/.test(stem) ? stem.slice(0, -1) : /[cg]$/.test(stem) ? stem + 'h' : stem) + 'er';
+        else fs = stem + (end === 'ere' ? 'er' : 'ir');
+      }
+      forms = ['ò', 'ai', 'à', 'emo', 'ete', 'anno'].map(e => fs + e);
+    } else if (tense === 'passato') {
+      const part = PART[inf] || (end === 'are' ? stem + 'ato' : end === 'ere' ? stem + 'uto' : end === 'ire' ? stem + 'ito' : null);
+      if (!part) return null;
+      const ess = reflexive || ESSERE_VERBS.has(inf);
+      if (!ess) return ['ho', 'hai', 'ha', 'abbiamo', 'avete', 'hanno'].map(a => a + ' ' + part);
+      const base = part.slice(0, -1);
+      return ['sono', 'sei', 'è', 'siamo', 'siete', 'sono'].map((a, i) => {
+        const v = i < 3 ? [base + 'o', base + 'a'] : [base + 'i', base + 'e'];
+        return v.map(x => (reflexive ? REFL[i] + ' ' : '') + a + ' ' + x).join('; ');
+      });
+    }
+    return reflexive ? forms.map((f, i) => REFL[i] + ' ' + f) : forms;
+  }
+
+  // Ist eine Vokabel ein Verb (Infinitiv)? → Infinitiv oder null
+  function verbOf(c) {
+    const w = String(c.it || '').split(';')[0].replace(/\([^)]*\)/g, '').trim().toLowerCase();
+    if (!/^[a-zàèéìòù]+(are|ere|ire|arsi|ersi|irsi|urre|orre|ursi)$/.test(w)) return null;
+    return conjugate(w, 'presente') ? w : null;
+  }
+  const conjTenses = () => (state.settings.conjTenses && state.settings.conjTenses.length) ? state.settings.conjTenses : ['presente'];
+  function conjCard(c, verb, tense) {
+    const forms = conjugate(verb, tense);
+    if (!forms) return null;
+    return { id: `c:${c.id}:${tense}`, de: verb, it: forms.join(', '), note: c.de, lesson: c.lesson, grammar: true, gtype: 'conj', forms, verb, tense };
+  }
+  // automatisch erzeugte Konjugationsübungen aus den Vokabeln
+  function conjItems(lessons) {
+    const want = lessons && lessons.length ? new Set(lessons) : null;
+    const out = [];
+    for (const c of activeCards()) {
+      if (want && !want.has(c.lesson)) continue;
+      const v = verbOf(c);
+      if (!v) continue;
+      for (const t of conjTenses()) { const cc = conjCard(c, v, t); if (cc) out.push({ card: cc, dir: 'de-it' }); }
+    }
+    return out;
+  }
+
   // ---------- Grammatik als "Karten" ----------
   const activeTopics = () => Object.values(state.gtopics || {}).filter(t => !t.deleted);
   const activeGItems = (topicId) => Object.values(state.gitems || {}).filter(i => !i.deleted && state.gtopics[i.topicId] && !state.gtopics[i.topicId].deleted && (!topicId || i.topicId === topicId));
   // Übung → kartenähnliches Objekt für die Abfrage (Frage = "de", Lösung = "it")
   function gCard(i) {
     const t = state.gtopics[i.topicId] || {};
+    if (i.type === 'conj') return { id: 'g:' + i.id, de: i.prompt, it: (i.options || []).join(', '), note: '', lesson: t.lesson || '', grammar: true, topicId: i.topicId, gtype: 'conj', forms: i.options || [], verb: i.prompt, tense: i.hint };
     return { id: 'g:' + i.id, de: i.prompt, it: i.answer, note: i.hint || '', lesson: t.lesson || '', grammar: true, topicId: i.topicId, gtype: i.type, options: i.options || [] };
   }
   const allLessons = () => [...new Set([...lessonMap().keys(), ...activeTopics().map(t => t.lesson).filter(Boolean)])]
@@ -115,6 +221,7 @@
     const out = [];
     if (content !== 'grammar') for (const c of activeCards()) if (!want || want.has(c.lesson)) for (const d of dirsFor(dir)) out.push({ card: c, dir: d });
     if (content !== 'vocab') for (const i of activeGItems()) { const g = gCard(i); if (!want || want.has(g.lesson)) out.push({ card: g, dir: 'de-it' }); }
+    if (content !== 'vocab' && state.settings.conjAuto !== false) out.push(...conjItems(lessons));
     return out;
   }
 
@@ -635,6 +742,7 @@
     }
 
     function pickMode(it, mode) {
+      if (it.card.gtype === 'conj') return 'table';
       if (it.card.grammar) return it.card.gtype === 'choice' ? 'choice' : (mode === 'flip' ? 'flip' : 'type');
       if (mode === 'mix') {
         const p = prog(it.card.id, it.dir);
@@ -646,8 +754,9 @@
     function next() {
       if (!S.queue.length) { S.phase = 'end'; draw(); return; }
       const it = S.queue[0];
-      S.cur = { ...it, answered: false, ok: null, input: '', hint: '', close: false };
+      S.cur = { ...it, answered: false, ok: null, input: it.mode === 'table' ? [] : '', hint: '', close: false };
       S.showRule = false;
+      S.lastInput = null;
       if (it.mode === 'choice') {
         S.cur.options = it.card.grammar ? shuffle(it.card.options.slice()) : buildOptions(it);
         if (!S.cur.options || S.cur.options.length < 2) S.cur.mode = 'type';
@@ -740,6 +849,16 @@
             lang="${ansLang}" placeholder="${ansLang === 'it' ? 'auf Italienisch …' : 'auf Deutsch …'}" value="${esc(it.input)}" ${it.answered ? 'readonly' : ''}>
           ${ansLang === 'it' && !it.answered ? `<div class="accents">${['à', 'è', 'é', 'ì', 'ò', 'ù'].map(a => `<button data-action="s-accent" data-ch="${a}">${a}</button>`).join('')}</div>` : ''}
           ${it.answered ? '' : `<div class="row" style="margin-top:12px"><button class="btn" data-action="s-skip">Weiß ich nicht</button><button class="btn primary spacer" data-action="s-check">Prüfen</button></div>`}`;
+      } else if (it.mode === 'table') {
+        const vals = it.input || [];
+        body = `<div class="card conj-card">${PERSONS.map((pe, i) => {
+          const cls = it.answered ? (it.cells && it.cells[i] ? 'ok' : 'bad') : '';
+          return `<div class="conj-row ${cls}"><span class="conj-p">${pe}</span>
+            <input class="conj-input" data-i="${i}" type="text" lang="it" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" value="${esc(vals[i] || '')}" ${it.answered ? 'readonly' : ''}>
+            ${it.answered && !(it.cells && it.cells[i]) ? `<span class="conj-sol">${esc(it.card.forms[i].split(';')[0].trim())}</span>` : ''}</div>`;
+        }).join('')}</div>
+          ${!it.answered ? `<div class="accents">${['à', 'è', 'é', 'ì', 'ò', 'ù'].map(a => `<button data-action="s-accent" data-ch="${a}">${a}</button>`).join('')}</div>
+          <div class="row" style="margin-top:12px"><button class="btn" data-action="s-skip">Weiß ich nicht</button><button class="btn primary spacer" data-action="s-check">Prüfen</button></div>` : ''}`;
       } else if (it.mode === 'choice') {
         const right = answerOf(it);
         body = `<div class="choices">${it.options.map((o, i) => {
@@ -750,7 +869,12 @@
       }
 
       let fb = '';
-      if (it.answered && it.mode !== 'flip') {
+      if (it.answered && it.mode === 'table') {
+        const n = (it.cells || []).filter(Boolean).length;
+        fb = it.ok ? `<div class="feedback ok"><div class="title">Richtig! Alle 6 Formen 🎉</div>${it.hint ? `<div>${esc(it.hint)}</div>` : ''}</div>`
+          : `<div class="feedback bad"><div class="title">${n} von 6 richtig</div><div class="small">Die richtige Form steht jeweils unter dem Fehler.</div>
+             ${n ? `<button class="btn small" style="margin-top:8px" data-action="s-override">Ich hatte recht</button>` : ''}</div>`;
+      } else if (it.answered && it.mode !== 'flip') {
         const sol = answerOf(it);
         fb = it.ok
           ? `<div class="feedback ok"><div class="title">Richtig!</div>${it.hint ? `<div>${esc(it.hint)}</div>` : ''}${it.mode !== 'choice' && !variants(sol).includes(norm(it.input)) ? `<div class="small muted">Lösung: ${esc(sol)}</div>` : ''}</div>`
@@ -772,7 +896,7 @@
           <span class="small muted">${S.done.size}/${S.total}</span>
         </div>
         <div class="card prompt-card">
-          <div class="prompt-label">${it.card.grammar ? '📘 ' + esc(state.gtopics[it.card.topicId]?.title || 'Grammatik') : DIR_LABEL[it.dir]}${isNew ? '<span class="new-badge">NEU</span>' : ''}</div>
+          <div class="prompt-label">${it.card.gtype === 'conj' ? '🔁 Konjugiere · ' + esc(TENSES[it.card.tense] || '') : it.card.grammar ? '📘 ' + esc(state.gtopics[it.card.topicId]?.title || 'Grammatik') : DIR_LABEL[it.dir]}${isNew ? '<span class="new-badge">NEU</span>' : ''}</div>
           <div class="prompt">${esc(promptOf(it))}</div>
           ${it.card.note && (it.answered || it.dir === 'de-it') ? `<div class="prompt-note">${esc(it.card.note)}</div>` : ''}
           ${promptIsIt ? `<button class="speak" data-action="speak" data-text="${esc(it.card.it)}" aria-label="Vorlesen">🔊</button>` : ''}
@@ -783,11 +907,19 @@
         </div>
         ${body}
         ${fb}
-        ${it.answered && it.mode !== 'flip' && !promptIsIt ? `<div style="text-align:center;margin-bottom:12px"><button class="btn small" data-action="speak" data-text="${esc(it.card.it)}">🔊 Anhören</button></div>` : ''}
+        ${it.answered && it.mode !== 'flip' && it.mode !== 'table' && !promptIsIt ? `<div style="text-align:center;margin-bottom:12px"><button class="btn small" data-action="speak" data-text="${esc(it.card.it)}">🔊 Anhören</button></div>` : ''}
         ${actions}`;
 
       const inp = $('#answer');
-      if (inp && !it.answered) {
+      const cins = $$('.conj-input');
+      if (cins.length && !it.answered) {
+        cins.forEach(ci => {
+          ci.addEventListener('input', () => { S.cur.input[+ci.dataset.i] = ci.value; });
+          ci.addEventListener('focus', () => { S.lastInput = ci; });
+        });
+        const firstEmpty = cins.find(ci => !ci.value) || cins[0];
+        firstEmpty.focus();
+      } else if (inp && !it.answered) {
         inp.focus();
         inp.addEventListener('input', () => { S.cur.input = inp.value; });
       } else if ($('#nextBtn')) {
@@ -820,18 +952,28 @@
       's-reveal': () => answer(null),
       's-grade': el => { S.cur.ok = el.dataset.ok === '1'; commitAndNext(); },
       's-check': () => {
+        if (S.cur.mode === 'table') {
+          const vals = $$('.conj-input').map(ci => ci.value);
+          if (!vals.some(x => norm(x))) { toast('Erst etwas eintippen – oder „Weiß ich nicht“'); return; }
+          const res = S.cur.card.forms.map((f, i) => checkAnswer(vals[i], f, 'it', true));
+          const cells = res.map(r => r.ok);
+          const hint = res.some(r => r.ok && r.hint) ? 'Achte auf die Akzente.' : '';
+          answer(cells.every(Boolean), { input: vals, cells, hint });
+          return;
+        }
         const inp = $('#answer');
         const val = inp ? inp.value : S.cur.input;
         if (!norm(val)) { toast('Erst etwas eintippen – oder „Weiß ich nicht“'); return; }
         const r = checkAnswer(val, answerOf(S.cur), S.cur.dir === 'de-it' ? 'it' : 'de', !!S.cur.card.grammar);
         answer(r.ok, { input: val, hint: r.hint || '', close: !!r.close });
       },
-      's-skip': () => answer(false, { input: '' }),
+      's-skip': () => answer(false, { input: S.cur.mode === 'table' ? [] : '', cells: [] }),
       's-accent': el => {
-        const inp = $('#answer');
+        const inp = (S.lastInput && document.body.contains(S.lastInput)) ? S.lastInput : $('#answer');
+        if (!inp) return;
         const s = inp.selectionStart ?? inp.value.length, e = inp.selectionEnd ?? s;
         inp.value = inp.value.slice(0, s) + el.dataset.ch + inp.value.slice(e);
-        S.cur.input = inp.value;
+        if (inp.classList.contains('conj-input')) S.cur.input[+inp.dataset.i] = inp.value; else S.cur.input = inp.value;
         inp.focus();
         inp.setSelectionRange(s + 1, s + 1);
       },
@@ -853,6 +995,12 @@
       const it = S.cur;
       if (e.key === 'Enter') {
         e.preventDefault();
+        if (!it.answered && it.mode === 'table') {
+          const a = document.activeElement;
+          if (a && a.classList.contains('conj-input') && +a.dataset.i < 5) $$('.conj-input')[+a.dataset.i + 1].focus();
+          else actions['s-check']();
+          return;
+        }
         if (!it.answered) {
           if (it.mode === 'type') actions['s-check']();
           else if (it.mode === 'flip') actions['s-reveal']();
@@ -990,10 +1138,10 @@
 
   function render() {
     if (Session.active()) return; // Session zeichnet sich selbst
-    const tab = { edit: 'vocab', import: 'vocab', scan: 'vocab', gtopic: 'vocab', gimport: 'vocab', exam: 'exams', examEdit: 'exams' }[route] || route;
+    const tab = { edit: 'vocab', import: 'vocab', scan: 'vocab', gtopic: 'vocab', gimport: 'vocab', conj: 'vocab', exam: 'exams', examEdit: 'exams' }[route] || route;
     $$('#tabbar button').forEach(b => b.classList.toggle('active', b.dataset.to === tab));
     const v = $('#view');
-    const views = { home: viewHome, learn: viewLearn, vocab: viewVocab, edit: viewEdit, import: viewImport, more: viewMore, exams: viewExams, exam: viewExam, examEdit: viewExamEdit, scan: viewScan, gtopic: viewGTopic, gimport: viewGImport };
+    const views = { home: viewHome, learn: viewLearn, vocab: viewVocab, edit: viewEdit, import: viewImport, more: viewMore, exams: viewExams, exam: viewExam, examEdit: viewExamEdit, scan: viewScan, gtopic: viewGTopic, gimport: viewGImport, conj: viewConj };
     (views[route] || viewHome)(v);
     Sync.paint();
   }
@@ -1263,7 +1411,8 @@
 
   // Grammatik-Paket lesen. Rückgabe: {topics: [{title, lesson, explanation, items: [...]}], errors: [], skipped: []}
   const GTYPES = { 'lücke': 'gap', 'luecke': 'gap', 'gap': 'gap', 'wahl': 'choice', 'auswahl': 'choice', 'choice': 'choice', 'übersetze': 'translate', 'uebersetze': 'translate', 'übersetzen': 'translate', 'translate': 'translate' };
-  const GLATER = ['ordne', 'konjugiere', 'konjugation'];
+  const GLATER = ['ordne'];
+  const TENSE_ALIASES = { 'presente': 'presente', 'passato prossimo': 'passato', 'passato': 'passato', 'imperfetto': 'imperfetto', 'futuro': 'futuro', 'futuro semplice': 'futuro' };
   function parsePack(text, defaultLesson = '') {
     const topics = [], errors = [], skipped = [];
     let cur = null, section = 'expl';
@@ -1282,6 +1431,17 @@
       if (!m) { errors.push(`Zeile ${n + 1}: „${l.slice(0, 40)}“ – Typ fehlt (z. B. „lücke:“)`); return; }
       const kind = m[1].toLowerCase(), body = m[2];
       if (GLATER.includes(kind)) { skipped.push(kind); return; }
+      if (kind === 'konjugiere' || kind === 'konjugation') {
+        const [left, right] = body.split(' = ');
+        const m2 = left.trim().match(/^([a-zàèéìòù]+)\s*(?:\(([^)]+)\))?$/i);
+        if (!m2) { errors.push(`Zeile ${n + 1}: Format „konjugiere: verbo (Zeit)“`); return; }
+        const verb = m2[1].toLowerCase(), tense = TENSE_ALIASES[(m2[2] || 'presente').trim().toLowerCase()];
+        if (!tense) { errors.push(`Zeile ${n + 1}: Zeit „${m2[2]}“ unbekannt (Presente, Passato prossimo, Imperfetto, Futuro)`); return; }
+        let forms = right ? right.split(',').map(x => x.trim()) : conjugate(verb, tense);
+        if (!forms || forms.length !== 6) { errors.push(`Zeile ${n + 1}: Für „${verb}“ bitte alle 6 Formen angeben („= io, tu, lui, noi, voi, loro“)`); return; }
+        cur.items.push({ type: 'conj', prompt: verb, answer: forms.join(', '), options: forms, hint: tense });
+        return;
+      }
       const type = GTYPES[kind];
       if (!type) { errors.push(`Zeile ${n + 1}: Unbekannter Typ „${m[1]}“`); return; }
       const eq = body.lastIndexOf(' = ');
@@ -1312,6 +1472,59 @@
     return { n: items.length, due, fresh, pct: items.length ? boxSum / (items.length * MAX_BOX) : 0 };
   }
 
+
+  function conjStats() {
+    const items = conjItems(), t = now();
+    let due = 0, fresh = 0;
+    for (const it of items) { const p = prog(it.card.id, 'de-it'); if (!p || !p.seen) fresh++; else if (p.due <= t) due++; }
+    return { n: items.length, verbs: new Set(items.map(x => x.card.verb)).size, due, fresh };
+  }
+  function conjTrainerCard() {
+    const cs = conjStats(), sel = new Set(conjTenses());
+    return `<div class="card">
+      <div class="row"><div class="spacer"><div class="name" style="font-weight:700">🔁 Konjugationstrainer</div>
+        <div class="small muted">${plural(cs.verbs, 'Verb', 'Verben')} aus deinen Vokabeln${cs.due ? ` · <b style="color:var(--green)">${cs.due} fällig</b>` : ''}${cs.fresh ? ` · ${cs.fresh} neu` : ''}</div></div></div>
+      <div class="chips" style="margin:12px 0">${Object.entries(TENSES).map(([k, lab]) => `<button class="chip ${sel.has(k) ? 'on' : ''}" data-action="conj-tense" data-t="${k}">${lab}</button>`).join('')}</div>
+      <label class="check"><input type="checkbox" id="conjAuto" ${state.settings.conjAuto !== false ? 'checked' : ''}><span class="small">Beim Lernen von Grammatik automatisch mitüben</span></label>
+      <div class="row" style="margin-top:10px">
+        <button class="btn primary spacer" data-action="conj-learn" ${cs.n ? '' : 'disabled'}>Üben${cs.due + cs.fresh ? ` (${cs.due + cs.fresh})` : cs.n ? ' 🎲' : ''}</button>
+        <button class="btn spacer" data-action="go" data-to="conj">Nachschlagen</button>
+      </div>
+      ${cs.verbs ? '' : `<p class="small muted" style="margin:10px 0 0">Sobald Verben (z. B. „parlare“) in deinen Vokabeln sind, erscheinen sie hier automatisch.</p>`}
+    </div>`;
+  }
+  function startConj() {
+    const items = conjItems(), t = now(), st = state.settings;
+    const open = items.filter(it => { const p = prog(it.card.id, 'de-it'); return !p || !p.seen || p.due <= t; });
+    if (open.length) return Session.start(shuffle(open).slice(0, st.sessionSize), { mode: st.mode });
+    Session.start(shuffle(items).slice(0, st.sessionSize), { mode: st.mode, practice: true, random: true });
+  }
+  function conjTable(verb, tense) {
+    const f = conjugate(verb, tense);
+    if (!f) return `<p class="small muted">Kann ich nicht konjugieren.</p>`;
+    return `<table class="conj-table">${f.map((x, i) => `<tr><td>${PERSONS[i]}</td><td>${esc(x.split(';').map(y => y.trim()).join(' / '))}</td></tr>`).join('')}</table>`;
+  }
+  function viewConj(v) {
+    setTitle('Konjugation');
+    const verbs = [...new Map(activeCards().map(c => [verbOf(c), c]).filter(([vb]) => vb)).entries()].sort((a, b) => a[0].localeCompare(b[0], 'it'));
+    const q = (ui.conjQ || '').trim().toLowerCase();
+    const shown = q ? verbs.filter(([vb, c]) => vb.includes(q) || norm(c.de).includes(q)) : verbs;
+    const free = q && /^[a-zàèéìòù]+(are|ere|ire|arsi|ersi|irsi|urre|orre)$/.test(q) && !verbs.some(([vb]) => vb === q) ? q : null;
+    const open = ui.conjOpen;
+    const block = vb => `<div class="conj-tables">${Object.entries(TENSES).map(([k, lab]) => `<div><div class="small muted" style="font-weight:700;margin-top:8px">${lab}</div>${conjTable(vb, k)}</div>`).join('')}</div>`;
+    v.innerHTML = `
+      <input type="search" id="conjQ" placeholder="Verb suchen oder eingeben, z. B. scrivere" value="${esc(ui.conjQ || '')}" style="margin:6px 0 12px">
+      ${free ? `<div class="card"><b>${esc(free)}</b><span class="small muted"> · nicht in deinen Vokabeln</span>${block(free)}
+        <p class="small muted" style="margin:8px 0 0">Unregelmäßige Verben, die die App nicht kennt, können falsch sein.</p></div>` : ''}
+      <div class="card">${shown.length ? shown.map(([vb, c]) => `
+        <div class="vocab-item" data-action="conj-open" data-v="${esc(vb)}">
+          <div class="spacer" style="min-width:0"><div class="it">${esc(vb)}</div><div class="de">${esc(c.de)}</div>${open === vb ? block(vb) : ''}</div>
+          <span class="muted">${open === vb ? '▴' : '▾'}</span>
+        </div>`).join('') : `<div class="empty">${verbs.length ? 'Nichts gefunden.' : 'Noch keine Verben in deinen Vokabeln.'}</div>`}</div>`;
+    const inp = $('#conjQ');
+    inp.addEventListener('input', () => { ui.conjQ = inp.value; const pos = inp.selectionStart; viewConj(v); const n2 = $('#conjQ'); n2.focus(); n2.setSelectionRange(pos, pos); });
+  }
+
   function viewGrammar(v) {
     setTitle('Stoff');
     const topics = activeTopics();
@@ -1324,6 +1537,7 @@
     v.innerHTML = `
       ${stoffSeg()}
       <button class="btn primary block" style="margin:0 0 14px" data-action="go" data-to="gimport">Grammatik-Paket importieren</button>
+      ${conjTrainerCard()}
       ${topics.length ? [...byLesson.entries()].map(([lesson, list]) => `
         <div class="section-title">${esc(lesson)}</div>
         <div class="card">${list.map(t => { const s2 = topicStats(t); return `
@@ -1344,7 +1558,7 @@
     setTitle(t.title);
     const items = activeGItems(t.id);
     const s2 = topicStats(t);
-    const typ = { gap: 'Lücke', choice: 'Auswahl', translate: 'Übersetzen' };
+    const typ = { gap: 'Lücke', choice: 'Auswahl', translate: 'Übersetzen', conj: 'Konjugation' };
     v.innerHTML = `
       <div class="card">
         <div class="small muted">${esc(t.lesson || 'Ohne Lektion')} · ${plural(s2.n, 'Übung', 'Übungen')}</div>
@@ -1404,6 +1618,7 @@ wahl: Voi ___ molto. | studiate | studiano | studi = studiate
         <code>lücke: Satz mit ___ (Hinweis) = Lösung</code><br>
         <code>wahl: Satz ___ | A | B | C = Lösung</code><br>
         <code>übersetze: deutscher Satz = italienischer Satz</code><br>
+        <code>konjugiere: parlare (presente)</code> – Formen rechnet die App selbst aus (oder <code>= io, tu, lui, noi, voi, loro</code> angeben)<br>
         Mehrere richtige Lösungen mit <code>;</code> trennen.</p>
       </div>`;
     const upd = () => {
@@ -1711,7 +1926,7 @@ wahl: Voi ___ molto. | studiate | studiano | studi = studiate
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.7</p>`;
+      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.8</p>`;
 
     Push.paint();
     const f = $('#loginForm');
@@ -1761,6 +1976,13 @@ wahl: Voi ___ molto. | studiate | studiano | studi = studiate
     },
     'new-card': () => go('edit', { editId: null }),
     'stoff': el => { ui.stoff = el.dataset.v; render(); },
+    'conj-tense': el => {
+      const s2 = new Set(conjTenses()); const k = el.dataset.t;
+      if (s2.has(k)) { if (s2.size > 1) s2.delete(k); else return toast('Mindestens eine Zeit auswählen'); } else s2.add(k);
+      state.settings.conjTenses = Object.keys(TENSES).filter(x => s2.has(x)); persist(); render();
+    },
+    'conj-learn': () => startConj(),
+    'conj-open': el => { ui.conjOpen = ui.conjOpen === el.dataset.v ? null : el.dataset.v; render(); },
     'gtopic-open': el => go('gtopic', { gtopicId: el.dataset.id }),
     'gtopic-learn': el => startGrammar(el.dataset.id),
     'gtopic-all': el => startGrammar(el.dataset.id, true),
@@ -1790,7 +2012,7 @@ wahl: Voi ___ molto. | studiate | studiano | studi = studiate
         for (const it of pt.items) {
           if (have.has(norm(it.prompt))) continue;
           const id = uid();
-          state.gitems[id] = { id, topicId: t.id, type: it.type, prompt: it.prompt, answer: it.answer, options: it.options, hint: '', created: ts + nI, updated: ts };
+          state.gitems[id] = { id, topicId: t.id, type: it.type, prompt: it.prompt, answer: it.answer, options: it.options, hint: it.hint || '', created: ts + nI, updated: ts };
           have.add(norm(it.prompt)); nI++;
         }
       }
@@ -1958,6 +2180,9 @@ wahl: Voi ___ molto. | studiate | studiano | studi = studiate
     fn(el);
   });
   document.addEventListener('keydown', e => Session.key(e));
+  document.addEventListener('change', e => {
+    if (e.target && e.target.id === 'conjAuto') { state.settings.conjAuto = e.target.checked; persist(); toast('Gespeichert'); }
+  });
 
   // ================= Start =================
   seed();
@@ -1970,5 +2195,5 @@ wahl: Voi ___ molto. | studiate | studiano | studi = studiate
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
   // Fürs Testen in der Konsole
-  window.__italiano = { get state() { return state; }, checkAnswer, parseLine, Exams, dayDiff, addDays, targetReps, grade, Scan, scanFiles, parsePack, mdLite, learnables };
+  window.__italiano = { get state() { return state; }, checkAnswer, parseLine, Exams, dayDiff, addDays, targetReps, grade, Scan, scanFiles, parsePack, mdLite, learnables, conjugate, verbOf };
 })();
