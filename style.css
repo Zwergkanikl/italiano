@@ -254,3 +254,19 @@ textarea { min-height: 180px; resize: vertical; font-family: ui-monospace, Menlo
 .pick-list .check { padding: 8px 0; }
 .tabbar button { min-width: 0; }
 .tabbar span { white-space: nowrap; }
+
+/* ---------- Foto scannen ---------- */
+label.btn { cursor: pointer; }
+.scan-thumb { width: 54px; height: 54px; object-fit: cover; border-radius: 10px; border: 1px solid var(--line); flex-shrink: 0; }
+.scan-map { display: flex; gap: 8px; margin-bottom: 10px; overflow-x: auto; }
+.scan-map label { flex: 1; min-width: 96px; }
+.scan-map select { padding: 8px 10px; font-size: 14px; }
+.scan-rows { max-height: 60vh; overflow-y: auto; }
+.scan-row { display: flex; gap: 8px; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); }
+.scan-row:first-child { border-top: 0; }
+.scan-row input[type=checkbox] { width: 22px; height: 22px; accent-color: var(--green); flex-shrink: 0; }
+.scan-row input[type=text] { flex: 1; min-width: 0; padding: 8px 10px; font-size: 15px; }
+.scan-import { position: sticky; bottom: calc(var(--tabbar-h) + 8px + env(safe-area-inset-bottom)); z-index: 4; }
+.scan-import { padding: 10px 12px; }
+.scan-import input { flex: 1; min-width: 0; }
+.scan-import .btn { flex-shrink: 0; }

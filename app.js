@@ -458,6 +458,130 @@
     return { enable, disable, test, refresh, paint };
   })();
 
+
+  // ================= Foto-Scan (Texterkennung mit Tesseract, kostenlos im Browser) =================
+  const Scan = (() => {
+    const LIB = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+    let workerP = null;
+    let onLog = null;
+    const median = a => { const b = a.slice().sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : 0; };
+
+    function loadLib() {
+      if (window.Tesseract) return Promise.resolve();
+      return new Promise((res, rej) => {
+        const el = document.createElement('script');
+        el.src = LIB;
+        el.onload = res;
+        el.onerror = () => rej(new Error('Texterkennung konnte nicht geladen werden. Bist du online?'));
+        document.head.appendChild(el);
+      });
+    }
+
+    async function worker() {
+      await loadLib();
+      if (!workerP) workerP = Tesseract.createWorker(['ita', 'deu'], 1, { logger: m => onLog && onLog(m) })
+        .catch(e => { workerP = null; throw e; });
+      return workerP;
+    }
+
+    // Foto laden, verkleinern, in Graustufen mit mehr Kontrast
+    function prepare(file) {
+      return new Promise((res, rej) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => {
+          const scale = Math.min(1, 2200 / Math.max(img.naturalWidth, img.naturalHeight));
+          const c = document.createElement('canvas');
+          c.width = Math.round(img.naturalWidth * scale);
+          c.height = Math.round(img.naturalHeight * scale);
+          const g = c.getContext('2d');
+          g.filter = 'grayscale(1) contrast(1.4)';
+          g.drawImage(img, 0, 0, c.width, c.height);
+          URL.revokeObjectURL(url);
+          res(c);
+        };
+        img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('Das Bild konnte nicht geöffnet werden.')); };
+        img.src = url;
+      });
+    }
+
+    function linesOf(data) {
+      if (data.lines && data.lines.length && data.lines[0].words) return data.lines;
+      const out = [];
+      for (const b of data.blocks || []) for (const pa of b.paragraphs || []) for (const l of pa.lines || []) out.push(l);
+      return out;
+    }
+
+    // Wörter einer Zeile an großen Lücken trennen, Spalten über die Startpositionen finden
+    function analyze(lines, W) {
+      const raw = [];
+      for (const l of lines) {
+        const ws = (l.words || []).filter(w => w.text && w.text.trim() && (w.confidence ?? 100) > 15)
+          .sort((a, b) => a.bbox.x0 - b.bbox.x0);
+        if (!ws.length) continue;
+        const h = median(ws.map(w => w.bbox.y1 - w.bbox.y0)) || 20;
+        const parts = [];
+        let cur = null;
+        for (const w of ws) {
+          if (cur && w.bbox.x0 - cur.x1 > Math.max(h * 1.5, W * 0.025)) { parts.push(cur); cur = null; }
+          if (!cur) cur = { x0: w.bbox.x0, x1: w.bbox.x1, text: w.text.trim() };
+          else { cur.x1 = w.bbox.x1; cur.text += ' ' + w.text.trim(); }
+        }
+        parts.push(cur);
+        raw.push(parts);
+      }
+      const tol = W * 0.06;
+      const xs = raw.flatMap(r => r.map(q => q.x0)).sort((a, b) => a - b);
+      const clusters = [];
+      for (const x of xs) {
+        const c = clusters[clusters.length - 1];
+        if (c && x - c.max <= tol) { c.max = x; c.n++; } else clusters.push({ min: x, max: x, n: 1 });
+      }
+      const minN = Math.max(2, raw.length * 0.2);
+      let cols = clusters.filter(c => c.n >= minN).map(c => c.min);
+      if (!cols.length) cols = [0];
+      const rows = raw.map(parts => {
+        const cells = cols.map(() => '');
+        for (const q of parts) {
+          let i = 0;
+          for (let k = 0; k < cols.length; k++) if (q.x0 >= cols[k] - tol) i = k;
+          cells[i] = cells[i] ? cells[i] + ' ' + q.text : q.text;
+        }
+        return cells;
+      });
+      // Zeilen ohne erste Spalte gehören meist zur Zeile davor (Umbruch)
+      const merged = [];
+      for (const cells of rows) {
+        if (merged.length && cols.length > 1 && !cells[0]) {
+          const prev = merged[merged.length - 1];
+          cells.forEach((t, i) => { if (t) prev[i] = prev[i] ? prev[i] + ' ' + t : t; });
+        } else merged.push(cells);
+      }
+      if (cols.length === 1) {
+        // Nur eine Spalte erkannt: vielleicht "italienisch - deutsch" in einer Zeile
+        return { cols: 2, rows: merged.map(c => { const r = parseLine(c[0]); return r ? [r.it, r.de] : [c[0], '']; }) };
+      }
+      return { cols: cols.length, rows: merged };
+    }
+
+    const defaultMap = n => Array.from({ length: n }, (_, i) => i === 0 ? 'it' : i === n - 1 ? 'de' : (n === 3 ? 'note' : 'skip'));
+
+    async function recognize(file) {
+      const w = await worker();
+      const canvas = await prepare(file);
+      const { data } = await w.recognize(canvas);
+      const res = analyze(linesOf(data), canvas.width);
+      const map = defaultMap(res.cols);
+      return {
+        cols: res.cols, map,
+        thumb: canvas.toDataURL('image/jpeg', 0.5),
+        rows: res.rows.map(cells => ({ cells, on: !!(cells[map.indexOf('it')] && cells[map.indexOf('de')]) }))
+      };
+    }
+
+    return { recognize, setLog: f => { onLog = f; }, analyze };
+  })();
+
   // ================= Abfrage-Session =================
   const Session = (() => {
     let S = null;
@@ -837,10 +961,10 @@
 
   function render() {
     if (Session.active()) return; // Session zeichnet sich selbst
-    const tab = { edit: 'vocab', import: 'vocab', exam: 'exams', examEdit: 'exams' }[route] || route;
+    const tab = { edit: 'vocab', import: 'vocab', scan: 'vocab', exam: 'exams', examEdit: 'exams' }[route] || route;
     $$('#tabbar button').forEach(b => b.classList.toggle('active', b.dataset.to === tab));
     const v = $('#view');
-    const views = { home: viewHome, learn: viewLearn, vocab: viewVocab, edit: viewEdit, import: viewImport, more: viewMore, exams: viewExams, exam: viewExam, examEdit: viewExamEdit };
+    const views = { home: viewHome, learn: viewLearn, vocab: viewVocab, edit: viewEdit, import: viewImport, more: viewMore, exams: viewExams, exam: viewExam, examEdit: viewExamEdit, scan: viewScan };
     (views[route] || viewHome)(v);
     Sync.paint();
   }
@@ -873,7 +997,7 @@
             ? `<button class="btn big spacer" data-action="learn-now">Jetzt lernen (${todo})</button>`
             : anyCards
               ? `<button class="btn big spacer" data-action="learn-random">Alles gelernt ✓ · Zufällig üben 🎲</button>`
-              : `<button class="btn big spacer" data-action="go" data-to="import">Vokabeln hinzufügen</button>`}
+              : `<button class="btn big spacer" data-action="go" data-to="scan">📷 Vokabeln hinzufügen</button>`}
           <button class="btn big ghost" data-action="go" data-to="learn">Auswahl</button>
         </div>
       </div>
@@ -895,7 +1019,7 @@
             </div>
             <button class="btn small" data-action="learn-lesson" data-lesson="${esc(name)}">Lernen</button>
           </div>`;
-        }).join('') : `<div class="empty">Noch keine Vokabeln. <a href="#" data-action="go" data-to="import">Liste importieren</a></div>`}
+        }).join('') : `<div class="empty">Noch keine Vokabeln. <a href="#" data-action="go" data-to="scan">Foto scannen</a> oder <a href="#" data-action="go" data-to="import">Liste importieren</a></div>`}
       </div>`;
   }
 
@@ -1091,8 +1215,9 @@
     const lessons = [...lessonMap().keys()];
     if (ui.vocabLesson && !lessons.includes(ui.vocabLesson)) ui.vocabLesson = '';
     v.innerHTML = `
-      <div class="row" style="margin:6px 0 12px">
-        <button class="btn primary spacer" data-action="new-card">+ Neue Vokabel</button>
+      <button class="btn primary block" style="margin:6px 0 10px" data-action="go" data-to="scan">📷 Foto scannen</button>
+      <div class="row" style="margin:0 0 12px">
+        <button class="btn spacer" data-action="new-card">+ Neue Vokabel</button>
         <button class="btn spacer" data-action="go" data-to="import">Liste importieren</button>
       </div>
       <div class="row" style="margin-bottom:12px">
@@ -1168,6 +1293,100 @@
         viewEdit(v); // gleich die nächste eintragen
       }
     });
+  }
+
+
+  // ---------- Foto scannen ----------
+  const SCAN_STATUS = {
+    'loading tesseract core': 'Lade Texterkennung …',
+    'initializing tesseract': 'Starte Texterkennung …',
+    'loading language traineddata': 'Lade Sprachdaten (nur beim ersten Mal) …',
+    'initializing api': 'Starte Texterkennung …',
+    'recognizing text': 'Erkenne Text …'
+  };
+  const scanState = () => ui.scan || (ui.scan = { pages: [], busy: false, status: '', progress: 0, lesson: '' });
+  const scanField = (pg, f) => pg.map.indexOf(f);
+  const scanSelected = () => scanState().pages.reduce((n, pg) => n + pg.rows.filter(r => r.on).length, 0);
+
+  function viewScan(v) {
+    setTitle('Foto scannen');
+    const sc = scanState();
+    const lessons = [...lessonMap().keys()];
+    const opts = [['it', 'Italienisch'], ['de', 'Deutsch'], ['note', 'Notiz'], ['skip', 'ignorieren']];
+    const pages = sc.pages.map((pg, pi) => {
+      const iIt = scanField(pg, 'it'), iDe = scanField(pg, 'de');
+      return `<div class="card">
+        <div class="row" style="margin-bottom:10px">
+          <img src="${pg.thumb}" class="scan-thumb" alt="">
+          <div class="spacer"><b>Foto ${pi + 1}</b><div class="small muted">${plural(pg.rows.length, 'Zeile', 'Zeilen')} erkannt · ${plural(pg.cols, 'Spalte', 'Spalten')}</div></div>
+          <button class="icon-btn" data-action="scan-drop" data-p="${pi}" aria-label="Foto entfernen">✕</button>
+        </div>
+        <div class="scan-map">${pg.map.map((m, ci) => `<label><span class="small muted">Spalte ${ci + 1}</span>
+          <select data-p="${pi}" data-col="${ci}">${opts.map(([val, lab]) => `<option value="${val}" ${m === val ? 'selected' : ''}>${lab}</option>`).join('')}</select></label>`).join('')}</div>
+        ${iIt < 0 || iDe < 0 ? `<p class="small" style="color:var(--red)">Bitte je eine Spalte als Italienisch und Deutsch wählen.</p>` : `
+        <div class="scan-rows">${pg.rows.map((r, ri) => `<div class="scan-row">
+          <input type="checkbox" data-p="${pi}" data-r="${ri}" ${r.on ? 'checked' : ''} aria-label="übernehmen">
+          <input type="text" lang="it" data-p="${pi}" data-r="${ri}" data-c="${iIt}" value="${esc(r.cells[iIt])}" placeholder="italienisch">
+          <input type="text" data-p="${pi}" data-r="${ri}" data-c="${iDe}" value="${esc(r.cells[iDe])}" placeholder="deutsch">
+        </div>`).join('')}</div>`}
+      </div>`;
+    }).join('');
+
+    v.innerHTML = `
+      <div class="card">
+        <p style="margin-top:0">Fotografiere eine Vokabelseite aus deinem Buch. Die App erkennt den Text, danach prüfst du die Liste und sortierst die Vokabeln in Lektionen.</p>
+        <label class="btn primary block big" for="scanFile" ${sc.busy ? 'style="pointer-events:none;opacity:.5"' : ''}>📷 ${sc.pages.length ? 'Weiteres Foto' : 'Foto aufnehmen oder auswählen'}</label>
+        <input type="file" id="scanFile" accept="image/*" multiple hidden>
+        <p class="small muted" style="margin:10px 0 0">Tipps: Seite gerade und gut beleuchtet fotografieren, möglichst nur den Vokabelteil. Beim ersten Mal lädt die App die Sprachdaten (ein paar MB).</p>
+        ${sc.pages.length ? `<p class="small muted" style="margin:8px 0 0"><b>In Lektionen aufteilen:</b> Nur die Zeilen anhaken, die in eine Lektion sollen, unten die Lektion eintragen und importieren. Der Rest bleibt hier für die nächste Lektion.</p>
+        <button class="btn small" style="margin-top:10px" data-action="scan-all">Alle an/aus</button>` : ''}
+      </div>
+      ${sc.busy ? `<div class="card"><div class="small"><b>${esc(sc.status || 'Einen Moment …')}</b></div><div class="bar" style="margin-top:10px"><i style="width:${Math.round(sc.progress * 100)}%"></i></div></div>` : ''}
+      ${pages}
+      ${sc.pages.length ? `<div class="card scan-import">
+        <datalist id="scanLessons">${lessons.map(l => `<option value="${esc(l)}">`).join('')}</datalist>
+        <div class="row">
+          <input type="text" id="scanLesson" list="scanLessons" value="${esc(sc.lesson)}" placeholder="Lektion, z. B. Lektion 3" aria-label="Lektion">
+          <button class="btn primary" data-action="scan-import" id="scanImportBtn">Importieren (${scanSelected()})</button>
+        </div>
+      </div>` : ''}`;
+
+    $('#scanFile').addEventListener('change', e => { const files = [...e.target.files]; e.target.value = ''; scanFiles(files); });
+    $('#scanLesson')?.addEventListener('input', e => { sc.lesson = e.target.value; });
+    const count = () => { const b = $('#scanImportBtn'); if (b) b.textContent = `Importieren (${scanSelected()})`; };
+    $$('.scan-map select').forEach(sel => sel.addEventListener('change', () => {
+      sc.pages[+sel.dataset.p].map[+sel.dataset.col] = sel.value;
+      render();
+    }));
+    $$('.scan-row input[type=checkbox]').forEach(cb => cb.addEventListener('change', () => {
+      sc.pages[+cb.dataset.p].rows[+cb.dataset.r].on = cb.checked; count();
+    }));
+    $$('.scan-row input[type=text]').forEach(inp => inp.addEventListener('input', () => {
+      sc.pages[+inp.dataset.p].rows[+inp.dataset.r].cells[+inp.dataset.c] = inp.value;
+    }));
+  }
+
+  async function scanFiles(files) {
+    const sc = scanState();
+    if (!files.length || sc.busy) return;
+    sc.busy = true;
+    Scan.setLog(m => {
+      sc.status = SCAN_STATUS[m.status] || sc.status;
+      if (typeof m.progress === 'number') sc.progress = m.progress;
+      if (route === 'scan') { const bar = $('.card .bar i'); const st = $('.card .small b'); if (bar) bar.style.width = Math.round(sc.progress * 100) + '%'; if (st) st.textContent = sc.status; }
+    });
+    for (let i = 0; i < files.length; i++) {
+      sc.status = files.length > 1 ? `Foto ${i + 1} von ${files.length} …` : 'Einen Moment …';
+      sc.progress = 0;
+      if (route === 'scan') render();
+      try {
+        const page = await Scan.recognize(files[i]);
+        if (page.rows.length) sc.pages.push(page); else toast('Auf dem Foto wurde kein Text erkannt.');
+      } catch (e) { toast(e.message || 'Texterkennung fehlgeschlagen'); }
+    }
+    sc.busy = false;
+    if (route === 'scan') render();
+    else toast('Foto erkannt – unter Vokabeln → Foto scannen prüfen');
   }
 
   // ---------- Import ----------
@@ -1263,7 +1482,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.5.1</p>`;
+      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.6</p>`;
 
     Push.paint();
     const f = $('#loginForm');
@@ -1312,6 +1531,42 @@
       persist(); render();
     },
     'new-card': () => go('edit', { editId: null }),
+    'scan-drop': el => { scanState().pages.splice(+el.dataset.p, 1); render(); },
+    'scan-all': () => {
+      const rows = scanState().pages.flatMap(pg => pg.rows);
+      const on = !rows.every(r => r.on);
+      rows.forEach(r => { r.on = on; });
+      render();
+    },
+    'scan-import': () => {
+      const sc = scanState();
+      const lesson = ($('#scanLesson')?.value || sc.lesson).trim();
+      if (!lesson) return toast('Wähle oder schreib eine Lektion');
+      const existing = new Set(activeCards().filter(c => c.lesson === lesson).map(c => norm(c.it)));
+      let added = 0, skipped = 0, t = now();
+      for (const pg of sc.pages) {
+        const iIt = scanField(pg, 'it'), iDe = scanField(pg, 'de'), iNote = scanField(pg, 'note');
+        if (iIt < 0 || iDe < 0) continue;
+        pg.rows = pg.rows.filter(r => {
+          if (!r.on) return true;
+          const it = (r.cells[iIt] || '').trim(), de = (r.cells[iDe] || '').trim();
+          if (!it || !de) return true; // unvollständig → bleibt zum Korrigieren
+          if (!existing.has(norm(it))) {
+            const id = uid();
+            state.cards[id] = { id, it, de, note: iNote >= 0 ? (r.cells[iNote] || '').trim() : '', lesson, created: t + added, updated: t };
+            existing.add(norm(it));
+            added++;
+          } else skipped++;
+          return false;
+        });
+      }
+      sc.pages = sc.pages.filter(pg => pg.rows.length);
+      sc.lesson = lesson;
+      if (!added && !skipped) return toast('Keine vollständigen angehakten Zeilen');
+      save();
+      toast(`${plural(added, 'Vokabel', 'Vokabeln')} in „${lesson}“` + (skipped ? ` (${skipped} schon vorhanden)` : ''));
+      if (sc.pages.length) render(); else { ui.scan = null; go('vocab', { vocabLesson: lesson, vocabSearch: '' }); }
+    },
     'exam-new': () => go('examEdit', { examId: null, examDraft: null }),
     'exam-open': el => go('exam', { examId: el.dataset.id }),
     'exam-edit': el => go('examEdit', { examId: el.dataset.id, examDraft: null }),
@@ -1447,5 +1702,5 @@
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
   // Fürs Testen in der Konsole
-  window.__italiano = { get state() { return state; }, checkAnswer, parseLine, Exams, dayDiff, addDays, targetReps, grade };
+  window.__italiano = { get state() { return state; }, checkAnswer, parseLine, Exams, dayDiff, addDays, targetReps, grade, Scan, scanFiles };
 })();
