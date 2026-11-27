@@ -39,6 +39,7 @@
     days: {},       // "JJJJ-MM-TT" -> {reviews, correct, new}
     settings: { sessionSize: 20, lessons: [], dir: 'de-it', mode: 'mix' },
     exams: {},      // id -> {id, title, date, lessons, cardIds, dir, notify, target, reps, planCounts, created, updated, deleted}
+    pages: {},      // id -> {id, lesson, order, created, updated, deleted}  (Buchseiten; die Bilder liegen in IndexedDB / Supabase Storage)
     seeded: false
   });
 
@@ -80,6 +81,15 @@
       m.get(c.lesson).push(c);
     }
     return new Map([...m.entries()].sort((a, b) => a[0].localeCompare(b[0], 'de', { numeric: true })));
+  }
+
+  // Buchseiten
+  const activePages = () => Object.values(state.pages || {}).filter(p => !p.deleted);
+  const lessonPages = l => activePages().filter(p => p.lesson === l).sort((a, b) => (a.order - b.order) || (a.created - b.created));
+  // Alle Lektionen: mit Vokabeln und/oder Buchseiten
+  function allLessons() {
+    const s = new Set([...lessonMap().keys(), ...activePages().map(p => p.lesson)]);
+    return [...s].sort((a, b) => a.localeCompare(b, 'de', { numeric: true }));
   }
 
   function dayStats(key = today()) {
@@ -163,6 +173,8 @@
     }
     out.exams = { ...(local.exams || {}) };
     for (const [k, v] of Object.entries(remote.exams || {})) out.exams[k] = newer(out.exams[k], v);
+    out.pages = { ...(local.pages || {}) };
+    for (const [k, v] of Object.entries(remote.pages || {})) out.pages[k] = newer(out.pages[k], v);
     out.seeded = local.seeded || remote.seeded;
     return out;
   }
@@ -317,6 +329,7 @@
         lastSync = now();
         localStorage.setItem('italiano.lastSync', lastSync);
         status = 'ok'; error = '';
+        Pages.syncFiles(); // Fotos im Hintergrund hoch-/runterladen
         if (!Session.active() && (route === 'home' || route === 'learn')) render(); // neue Daten anzeigen, aber keine Abfrage unterbrechen
       } catch (e) {
         status = auth ? 'err' : 'off';
@@ -354,6 +367,228 @@
     return { configured, run, schedule, signIn, signUp, signOut, paint, info, token, url, key, user: () => auth?.user };
   })();
 
+
+  // ================= Buchseiten (Fotos) =================
+  // Bilder liegen lokal in IndexedDB (offline) und, wenn angemeldet, im privaten Supabase-Bucket "seiten".
+  // Die Liste der Seiten (Lektion, Reihenfolge) steckt im normalen Lernstand und wird mit ihm synchronisiert.
+  const Pages = (() => {
+    const BUCKET = 'seiten';
+    const UP_KEY = 'italiano.pagesUp';
+    let dbp = null;
+    const urls = new Map(); // id+kind -> objectURL
+    let uploaded = new Set();
+    try { uploaded = new Set(JSON.parse(localStorage.getItem(UP_KEY) || '[]')); } catch (e) { /* egal */ }
+    const saveUp = () => localStorage.setItem(UP_KEY, JSON.stringify([...uploaded]));
+    let busy = false, again = false, lastError = '';
+
+    function db() {
+      if (!dbp) dbp = new Promise((res, rej) => {
+        const r = indexedDB.open('italiano-seiten', 1);
+        r.onupgradeneeded = () => r.result.createObjectStore('img');
+        r.onsuccess = () => res(r.result);
+        r.onerror = () => rej(r.error);
+      });
+      return dbp;
+    }
+    async function tx(mode, fn) {
+      const d = await db();
+      return new Promise((res, rej) => {
+        const t = d.transaction('img', mode);
+        const req = fn(t.objectStore('img'));
+        t.oncomplete = () => res(req && req.result);
+        t.onerror = () => rej(t.error);
+        t.onabort = () => rej(t.error || new Error('Speichern abgebrochen (Speicher voll?)'));
+      });
+    }
+    const getLocal = id => tx('readonly', s => s.get(id));
+    const putLocal = (id, v) => tx('readwrite', s => s.put(v, id));
+    const delLocal = id => tx('readwrite', s => s.delete(id));
+
+    function loadImg(file) {
+      return new Promise((res, rej) => {
+        const u = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => { URL.revokeObjectURL(u); res(img); };
+        img.onerror = () => { URL.revokeObjectURL(u); rej(new Error('Bild konnte nicht gelesen werden')); };
+        img.src = u;
+      });
+    }
+    function scaled(img, max, q) {
+      const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(img, 0, 0, c.width, c.height);
+      return new Promise(res => c.toBlob(res, 'image/jpeg', q));
+    }
+    // Foto verkleinern: groß genug zum Lesen, klein genug zum Speichern (~300–500 KB)
+    async function compress(file) {
+      const img = await loadImg(file);
+      return { full: await scaled(img, 2000, 0.8), thumb: await scaled(img, 420, 0.7) };
+    }
+
+    async function add(files, lesson) {
+      let order = Math.max(0, ...lessonPages(lesson).map(p => p.order || 0));
+      let n = 0;
+      const ids = [];
+      for (const f of files) {
+        if (!f.type.startsWith('image/') && !/\.(jpe?g|png|heic|heif|webp)$/i.test(f.name)) continue;
+        const id = uid(), t = now();
+        await putLocal(id, await compress(f));
+        state.pages[id] = { id, lesson, order: ++order, created: t + n, updated: t };
+        ids.push(id);
+        n++;
+      }
+      save();
+      recognizeLater(ids);
+      return n;
+    }
+
+    function remove(id) {
+      const p = state.pages[id];
+      if (!p) return;
+      p.deleted = true; p.updated = now();
+      save();
+    }
+
+    // Bild-URL für die Anzeige (lokal, sonst aus Supabase laden)
+    async function url(id, kind = 'thumb') {
+      const k = id + '|' + kind;
+      if (urls.has(k)) return urls.get(k);
+      let v = await getLocal(id).catch(() => null);
+      if (!v) v = await download(id);
+      if (!v) return null;
+      const u = URL.createObjectURL(v[kind] || v.full);
+      urls.set(k, u);
+      return u;
+    }
+
+    const objUrl = id => `${Sync.url}/storage/v1/object/${BUCKET}/${Sync.user().id}/${id}.jpg`;
+    async function headers() { return { apikey: Sync.key, Authorization: 'Bearer ' + await Sync.token() }; }
+
+    const loading = new Map();
+    function download(id) {
+      if (!Sync.user() || !navigator.onLine) return Promise.resolve(null);
+      if (loading.has(id)) return loading.get(id);
+      const pr = (async () => {
+        try {
+          const r = await fetch(`${Sync.url}/storage/v1/object/authenticated/${BUCKET}/${Sync.user().id}/${id}.jpg`, { headers: await headers() });
+          if (!r.ok) return null;
+          const img = await loadImg(await r.blob());
+          const v = { full: await scaled(img, 2000, 0.85), thumb: await scaled(img, 420, 0.7) };
+          await putLocal(id, v);
+          uploaded.add(id); saveUp();
+          return v;
+        } catch (e) { return null; } finally { loading.delete(id); }
+      })();
+      loading.set(id, pr);
+      return pr;
+    }
+
+    // Abgleich mit Supabase Storage: neue Fotos hoch, gelöschte entfernen
+    async function syncFiles() {
+      if (!Sync.user() || !navigator.onLine) return;
+      if (busy) { again = true; return; }
+      busy = true;
+      try {
+        for (const p of Object.values(state.pages || {})) {
+          if (p.deleted) {
+            if (uploaded.has(p.id)) {
+              const r = await fetch(objUrl(p.id), { method: 'DELETE', headers: await headers() });
+              if (r.ok || r.status === 404 || r.status === 400) { uploaded.delete(p.id); saveUp(); }
+            }
+            const k = await getLocal(p.id).catch(() => null);
+            if (k) await delLocal(p.id);
+            continue;
+          }
+          if (uploaded.has(p.id)) continue;
+          const v = await getLocal(p.id).catch(() => null);
+          if (!v) continue; // liegt auf einem anderen Gerät, wird beim Anschauen geladen
+          const r = await fetch(objUrl(p.id), { method: 'POST', headers: { ...await headers(), 'Content-Type': 'image/jpeg', 'x-upsert': 'true' }, body: v.full });
+          if (!r.ok) {
+            const d = await r.json().catch(() => ({}));
+            throw new Error(/bucket not found/i.test(d.message || d.error || '') ? 'Foto-Speicher fehlt in Supabase (seiten-setup.sql ausführen).' : (d.message || d.error || 'Foto-Upload fehlgeschlagen'));
+          }
+          uploaded.add(p.id); saveUp();
+        }
+        lastError = '';
+      } catch (e) {
+        lastError = e.message || String(e);
+      } finally {
+        busy = false;
+        if (route === 'pages' || route === 'more') { const el = $('#pagesInfo'); if (el) el.textContent = info(); }
+        if (again) { again = false; syncFiles(); }
+      }
+    }
+
+    // Text und Vokabeln erkennen lassen (Supabase-Funktion "erkennen" → Claude)
+    const recognizing = new Set();
+    const toB64 = blob => new Promise((res, rej) => {
+      const r = new FileReader();
+      r.onload = () => res(String(r.result).split(',')[1]);
+      r.onerror = () => rej(r.error);
+      r.readAsDataURL(blob);
+    });
+    async function recognize(id) {
+      const p = state.pages[id];
+      if (!p || recognizing.has(id)) return;
+      if (!Sync.user()) throw new Error('Zum Erkennen musst du in den Einstellungen angemeldet sein.');
+      recognizing.add(id);
+      refreshPage(id);
+      try {
+        let v = await getLocal(id).catch(() => null);
+        if (!v) v = await download(id);
+        if (!v) throw new Error('Foto nicht gefunden');
+        const r = await fetch(Sync.url + '/functions/v1/erkennen', {
+          method: 'POST',
+          headers: { ...await headers(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: await toB64(v.full) })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (r.status === 404) throw new Error('Die Erkennung ist in Supabase noch nicht eingerichtet (Funktion „erkennen“).');
+        if (!r.ok) throw new Error(d.error || d.message || 'Erkennung fehlgeschlagen');
+        p.ocr = { titel: d.titel || '', text: d.text || '', vokabeln: d.vokabeln || [], at: now() };
+        delete p.ocrError;
+        p.updated = now();
+        save();
+      } catch (e) {
+        p.ocrError = e.message || String(e);
+        throw e;
+      } finally {
+        recognizing.delete(id);
+        refreshPage(id);
+      }
+    }
+    // Neu fotografierte Seiten nacheinander im Hintergrund erkennen
+    let queue = Promise.resolve();
+    function recognizeLater(ids) {
+      if (!Sync.user()) return;
+      for (const id of ids) queue = queue.then(() => recognize(id).catch(e => toast(e.message)));
+    }
+    function refreshPage(id) { if ((route === 'page' && ui.pageId === id) || route === 'pages') render(); }
+
+    function info() {
+      const list = activePages();
+      if (!list.length) return '';
+      if (!Sync.user()) return 'Nicht angemeldet: Fotos sind nur auf diesem Gerät.';
+      if (lastError) return 'Fotos: ' + lastError;
+      const open = list.filter(p => !uploaded.has(p.id)).length;
+      return open ? `${plural(open, 'Foto wird', 'Fotos werden')} noch hochgeladen …` : 'Alle Fotos sind gesichert.';
+    }
+
+    return { add, remove, url, syncFiles, info, recognize, recognizeLater, isRecognizing: id => recognizing.has(id) };
+  })();
+
+  // Bilder in <img data-page="id" data-kind="thumb|full"> nachladen
+  function fillImages(root = document) {
+    for (const img of $$('img[data-page]', root)) {
+      if (img.src) continue;
+      Pages.url(img.dataset.page, img.dataset.kind || 'thumb').then(u => {
+        if (u) img.src = u; else img.closest('.page-thumb, .page-view')?.classList.add('missing');
+      });
+    }
+  }
 
   // ================= Mitteilungen (Web Push) =================
   const Push = (() => {
@@ -823,7 +1058,7 @@
 
   // ================= Ansichten =================
   let route = 'home';
-  let ui = { vocabLesson: '', vocabSearch: '', editId: null, formLesson: '', importLesson: '', importText: '', examId: null, examDraft: null, examSearch: '' };
+  let ui = { pagesLesson: '', pageId: null, pageZoom: false, pageTab: 'foto', pageVocabFor: null, pageVocabText: '', pageVocabLesson: '', vocabLesson: '', vocabSearch: '', editId: null, formLesson: '', importLesson: '', importText: '', examId: null, examDraft: null, examSearch: '' };
 
   function setTitle(t) { $('#title').textContent = t; document.title = t === 'Avanti Italiano' ? t : t + ' · Avanti Italiano'; }
 
@@ -837,10 +1072,10 @@
 
   function render() {
     if (Session.active()) return; // Session zeichnet sich selbst
-    const tab = { edit: 'vocab', import: 'vocab', exam: 'exams', examEdit: 'exams' }[route] || route;
+    const tab = { edit: 'vocab', import: 'vocab', pages: 'vocab', page: 'vocab', exam: 'exams', examEdit: 'exams' }[route] || route;
     $$('#tabbar button').forEach(b => b.classList.toggle('active', b.dataset.to === tab));
     const v = $('#view');
-    const views = { home: viewHome, learn: viewLearn, vocab: viewVocab, edit: viewEdit, import: viewImport, more: viewMore, exams: viewExams, exam: viewExam, examEdit: viewExamEdit };
+    const views = { home: viewHome, learn: viewLearn, vocab: viewVocab, edit: viewEdit, import: viewImport, more: viewMore, exams: viewExams, exam: viewExam, examEdit: viewExamEdit, pages: viewPages, page: viewPage };
     (views[route] || viewHome)(v);
     Sync.paint();
   }
@@ -885,17 +1120,21 @@
       ${Exams.upcoming().length ? `<div class="section-title">Nächste Termine</div>${Exams.upcoming().slice(0, 2).map(e => examCard(e)).join('')}` : ''}
       <div class="section-title">Lektionen</div>
       <div class="card">
-        ${lessons.size ? [...lessons.entries()].map(([name, list]) => {
+        ${allLessons().length ? allLessons().map(name => {
+          const list = lessons.get(name) || [];
+          const pages = lessonPages(name).length;
           const p = pool([name], st.dir);
+          const bits = [list.length ? plural(list.length, 'Vokabel', 'Vokabeln') : '', pages ? plural(pages, 'Buchseite', 'Buchseiten') : ''].filter(Boolean).join(' · ');
           return `<div class="lesson">
             <div class="info">
               <div class="name">${esc(name)}</div>
-              <div class="small muted">${plural(list.length, 'Vokabel', 'Vokabeln')}${p.due.length ? ` · <b style="color:var(--green)">${p.due.length} fällig</b>` : ''}</div>
-              <div class="bar"><i style="width:${Math.round(masteredShare(list) * 100)}%"></i></div>
+              <div class="small muted">${bits}${p.due.length ? ` · <b style="color:var(--green)">${p.due.length} fällig</b>` : ''}</div>
+              ${list.length ? `<div class="bar"><i style="width:${Math.round(masteredShare(list) * 100)}%"></i></div>` : ''}
             </div>
-            <button class="btn small" data-action="learn-lesson" data-lesson="${esc(name)}">Lernen</button>
+            ${pages ? `<button class="btn small ghost" data-action="pages-open" data-lesson="${esc(name)}" aria-label="Buchseiten">📖</button>` : ''}
+            ${list.length ? `<button class="btn small" data-action="learn-lesson" data-lesson="${esc(name)}">Lernen</button>` : ''}
           </div>`;
-        }).join('') : `<div class="empty">Noch keine Vokabeln. <a href="#" data-action="go" data-to="import">Liste importieren</a></div>`}
+        }).join('') : `<div class="empty">Noch keine Vokabeln. <a href="#" data-action="go" data-to="import">Liste importieren</a> oder <a href="#" data-action="go" data-to="pages">Buchseiten fotografieren</a></div>`}
       </div>`;
   }
 
@@ -1091,6 +1330,7 @@
     const lessons = [...lessonMap().keys()];
     if (ui.vocabLesson && !lessons.includes(ui.vocabLesson)) ui.vocabLesson = '';
     v.innerHTML = `
+      ${vocabTabs('vocab')}
       <div class="row" style="margin:6px 0 12px">
         <button class="btn primary spacer" data-action="new-card">+ Neue Vokabel</button>
         <button class="btn spacer" data-action="go" data-to="import">Liste importieren</button>
@@ -1107,6 +1347,155 @@
     drawVocabList();
     $('#lessonFilter').addEventListener('change', e => { ui.vocabLesson = e.target.value; render(); });
     $('#search').addEventListener('input', e => { ui.vocabSearch = e.target.value; drawVocabList(); });
+  }
+
+  const vocabTabs = on => `<div class="seg" style="margin:4px 0 14px">
+      <button class="${on === 'vocab' ? 'on' : ''}" data-action="go" data-to="vocab">Vokabeln</button>
+      <button class="${on === 'pages' ? 'on' : ''}" data-action="go" data-to="pages">Buchseiten${activePages().length ? ` (${activePages().length})` : ''}</button>
+    </div>`;
+
+  // ---------- Buchseiten ----------
+  function viewPages(v) {
+    setTitle('Buchseiten');
+    const lessons = allLessons();
+    if (ui.pagesLesson && !lessons.includes(ui.pagesLesson) && ui.pagesLesson !== ui.pagesNewLesson) ui.pagesLesson = '';
+    const shown = ui.pagesLesson ? [ui.pagesLesson] : lessons.filter(l => lessonPages(l).length);
+    const target = ui.pagesLesson || '';
+    v.innerHTML = `
+      ${vocabTabs('pages')}
+      <div class="card">
+        <label class="field"><span>Lektion</span>
+          <input type="text" id="pgLesson" list="pgLessonList" placeholder="leer lassen = Unsortiert" value="${esc(target)}" autocomplete="off">
+        </label>
+        <p class="small muted" style="margin:-4px 2px 12px">Text und Vokabeln werden nach dem Fotografieren automatisch erkannt${Sync.user() ? '' : ' (dafür in den Einstellungen anmelden)'}. Die Lektion kannst du später bei jeder Seite ändern.</p>
+        <datalist id="pgLessonList">${lessons.map(l => `<option value="${esc(l)}">`).join('')}</datalist>
+        <div class="row">
+          <button class="btn primary spacer" data-action="pages-camera">📷 Fotografieren</button>
+          <button class="btn spacer" data-action="pages-pick">🖼️ Aus Fotos</button>
+        </div>
+        <input type="file" id="pgCam" accept="image/*" capture="environment" hidden>
+        <input type="file" id="pgPick" accept="image/*" multiple hidden>
+        <p class="small muted" style="margin:10px 2px 0" id="pagesInfo">${esc(Pages.info())}</p>
+      </div>
+      ${lessons.some(l => lessonPages(l).length) ? `<div class="chips" style="margin-bottom:14px">
+          <button class="chip ${ui.pagesLesson ? '' : 'on'}" data-action="pages-filter" data-lesson="">Alle</button>
+          ${lessons.filter(l => lessonPages(l).length).map(l => `<button class="chip ${ui.pagesLesson === l ? 'on' : ''}" data-action="pages-filter" data-lesson="${esc(l)}">${esc(l)}</button>`).join('')}
+        </div>` : ''}
+      ${shown.map(l => {
+        const list = lessonPages(l);
+        return `<div class="section-title">${esc(l)} <span class="muted">· ${plural(list.length, 'Seite', 'Seiten')}</span></div>
+          ${list.length ? `<div class="page-grid">${list.map((p, i) => `
+            <button class="page-thumb" data-action="page-open" data-id="${esc(p.id)}">
+              <img data-page="${esc(p.id)}" data-kind="thumb" alt="Seite ${i + 1}">
+              <span>${i + 1}</span>
+              ${Pages.isRecognizing(p.id) ? '<em>erkenne …</em>' : p.ocr ? `<em class="ok">${p.ocr.vokabeln.length} Vok.</em>` : ''}
+            </button>`).join('')}</div>` : `<div class="card empty">Noch keine Seiten in dieser Lektion.</div>`}`;
+      }).join('') || `<div class="card empty">Noch keine Buchseiten. Lektion eintragen und los geht's 📷</div>`}`;
+    fillImages(v);
+    const inp = $('#pgLesson');
+    inp.addEventListener('change', () => { ui.pagesNewLesson = inp.value.trim(); if (lessons.includes(ui.pagesNewLesson)) { ui.pagesLesson = ui.pagesNewLesson; render(); } });
+    const onFiles = async e => {
+      const files = [...e.target.files];
+      e.target.value = '';
+      if (!files.length) return;
+      const lesson = inp.value.trim() || 'Unsortiert';
+      toast(files.length > 1 ? `${files.length} Fotos werden gespeichert …` : 'Foto wird gespeichert …');
+      try {
+        const n = await Pages.add(files, lesson);
+        toast(n ? `${plural(n, 'Seite', 'Seiten')} zu „${lesson}“ hinzugefügt ✓` : 'Keine Bilder gefunden');
+        ui.pagesLesson = lesson;
+        render();
+      } catch (err) { toast(err.message || 'Speichern fehlgeschlagen'); }
+    };
+    $('#pgCam').addEventListener('change', onFiles);
+    $('#pgPick').addEventListener('change', onFiles);
+  }
+
+  function viewPage(v) {
+    const p = state.pages[ui.pageId];
+    if (!p || p.deleted) return go('pages');
+    const list = lessonPages(p.lesson);
+    const i = list.findIndex(x => x.id === p.id);
+    setTitle(`${p.lesson} · Seite ${i + 1}`);
+    const lessons = allLessons();
+    v.innerHTML = `
+      <div class="row" style="margin:4px 0 12px">
+        <button class="btn" data-action="pages-back">‹ Zurück</button>
+        <span class="spacer"></span>
+        <button class="btn" data-action="page-nav" data-d="-1" ${i > 0 ? '' : 'disabled'} aria-label="Vorherige Seite">←</button>
+        <span class="small muted">${i + 1} / ${list.length}</span>
+        <button class="btn" data-action="page-nav" data-d="1" ${i < list.length - 1 ? '' : 'disabled'} aria-label="Nächste Seite">→</button>
+      </div>
+      <div class="seg" style="margin-bottom:12px">
+        ${[['foto', 'Foto'], ['text', 'Text'], ['vok', `Vokabeln${p.ocr ? ` (${p.ocr.vokabeln.length})` : ''}`]].map(([k, l]) => `<button class="${ui.pageTab === k ? 'on' : ''}" data-action="page-tab" data-v="${k}">${l}</button>`).join('')}
+      </div>
+      ${ui.pageTab === 'text' || ui.pageTab === 'vok' ? pageOcrBox(p) : `
+      <div class="page-view ${ui.pageZoom ? 'zoom' : ''}" data-action="page-zoom">
+        <img data-page="${esc(p.id)}" data-kind="full" alt="Buchseite">
+      </div>
+      <p class="small muted" style="text-align:center;margin:6px 0 14px">Antippen zum Vergrößern${ui.pageZoom ? ' · nochmal antippen zum Verkleinern' : ''}</p>`}
+      <div class="card">
+        <label class="field"><span>Lektion</span>
+          <input type="text" id="pvLesson" list="pvLessonList" value="${esc(p.lesson)}" autocomplete="off">
+        </label>
+        <datalist id="pvLessonList">${lessons.map(l => `<option value="${esc(l)}">`).join('')}</datalist>
+        <div class="row">
+          <button class="btn spacer" data-action="page-move" data-d="-1" ${i > 0 ? '' : 'disabled'}>Nach vorne</button>
+          <button class="btn spacer" data-action="page-move" data-d="1" ${i < list.length - 1 ? '' : 'disabled'}>Nach hinten</button>
+        </div>
+        <button class="btn danger block" style="margin-top:12px" data-action="page-delete">Seite löschen</button>
+      </div>`;
+    fillImages(v);
+    const vt = $('#pvVocab');
+    if (vt) {
+      const upd = () => {
+        ui.pageVocabText = vt.value;
+        const lines = vt.value.split(/\r?\n/).filter(l => l.trim());
+        const ok = lines.map(parseLine).filter(Boolean).length;
+        $('#pvVocabInfo').innerHTML = `${plural(ok, 'Vokabel', 'Vokabeln')} erkannt${lines.length - ok ? ` · <span style="color:var(--red)">${lines.length - ok} Zeile(n) nicht verstanden</span>` : ''}`;
+        $('#pvImport').disabled = !ok;
+      };
+      vt.addEventListener('input', upd);
+      upd();
+    }
+    $('#pvLesson').addEventListener('change', e => {
+      const l = e.target.value.trim();
+      if (!l || l === p.lesson) return;
+      p.lesson = l;
+      p.order = Math.max(0, ...lessonPages(l).map(x => x.order || 0)) + 1;
+      p.updated = now();
+      save(); toast(`In „${l}“ verschoben`); render();
+    });
+  }
+
+  const ocrLines = p => (p.ocr?.vokabeln || []).map(x => `${x.it} - ${x.de}${x.notiz ? ` [${x.notiz}]` : ''}`).join('\n');
+  function pageOcrBox(p) {
+    if (Pages.isRecognizing(p.id)) return `<div class="card empty">Text und Vokabeln werden erkannt … (dauert etwa eine halbe Minute)</div>`;
+    if (!p.ocr) return `<div class="card">
+        ${p.ocrError ? `<p class="small" style="color:var(--red);margin-top:0">${esc(p.ocrError)}</p>` : `<p class="small muted" style="margin-top:0">Für diese Seite wurde noch nichts erkannt.</p>`}
+        <button class="btn primary block" data-action="page-recognize" ${Sync.user() ? '' : 'disabled'}>🔍 Text und Vokabeln erkennen</button>
+        ${Sync.user() ? '' : '<p class="small muted" style="margin-bottom:0">Dafür in den Einstellungen anmelden.</p>'}
+      </div>`;
+    if (ui.pageTab === 'text') return `<div class="card">
+        ${p.ocr.titel ? `<div style="font-weight:700;margin-bottom:8px">${esc(p.ocr.titel)}</div>` : ''}
+        <div class="ocr-text" lang="it">${esc(p.ocr.text) || '<span class="muted">Kein Text erkannt.</span>'}</div>
+        <button class="btn block small" style="margin-top:14px" data-action="page-recognize">Neu erkennen</button>
+      </div>`;
+    if (ui.pageVocabFor !== p.id) { ui.pageVocabFor = p.id; ui.pageVocabText = ocrLines(p); ui.pageVocabLesson = p.lesson === 'Unsortiert' ? '' : p.lesson; }
+    const lessons = allLessons().filter(l => l !== 'Unsortiert');
+    return `<div class="card">
+        ${p.imported ? `<p class="small" style="margin-top:0;color:var(--green)"><b>✓ Schon übernommen</b> nach „${esc(p.imported)}“. Doppelte werden beim nochmal Übernehmen übersprungen.</p>` : ''}
+        <label class="field"><span>Vokabeln prüfen und bei Bedarf ändern (eine pro Zeile)</span>
+          <textarea id="pvVocab" style="min-height:220px">${esc(ui.pageVocabText)}</textarea>
+        </label>
+        <p class="small muted" style="margin:-4px 2px 10px" id="pvVocabInfo"></p>
+        <label class="field"><span>In welche Lektion?</span>
+          <input type="text" id="pvTarget" list="pvTargetList" placeholder="z. B. Lektion 3" value="${esc(ui.pageVocabLesson)}" autocomplete="off">
+        </label>
+        <datalist id="pvTargetList">${lessons.map(l => `<option value="${esc(l)}">`).join('')}</datalist>
+        <button class="btn primary block big" id="pvImport" data-action="page-import">In die Lektion übernehmen</button>
+        <button class="btn block small" style="margin-top:10px" data-action="page-recognize">Neu erkennen</button>
+      </div>`;
   }
 
   function drawVocabList() {
@@ -1132,7 +1521,7 @@
   function viewEdit(v) {
     const c = ui.editId ? state.cards[ui.editId] : null;
     setTitle(c ? 'Vokabel bearbeiten' : 'Neue Vokabel');
-    const lessons = [...lessonMap().keys()];
+    const lessons = allLessons();
     const lesson = c ? c.lesson : (ui.formLesson || ui.vocabLesson || lessons[lessons.length - 1] || 'Meine Vokabeln');
     v.innerHTML = `
       <form class="card" id="cardForm" autocomplete="off">
@@ -1188,9 +1577,25 @@
     return null;
   }
 
+  // Vokabeln in eine Lektion übernehmen (doppelte überspringen), gibt Anzahl neuer zurück
+  function importRows(lesson, rows) {
+    const existing = new Set(activeCards().filter(c => c.lesson === lesson).map(c => norm(c.it)));
+    let added = 0;
+    const t = now();
+    for (const r of rows) {
+      if (existing.has(norm(r.it))) continue;
+      const id = uid();
+      state.cards[id] = { id, it: r.it, de: r.de, note: r.note, lesson, created: t + added, updated: t };
+      existing.add(norm(r.it));
+      added++;
+    }
+    save();
+    return added;
+  }
+
   function viewImport(v) {
     setTitle('Liste importieren');
-    const lessons = [...lessonMap().keys()];
+    const lessons = allLessons();
     v.innerHTML = `
       <div class="card">
         <label class="field"><span>Lektion</span><input type="text" id="impLesson" list="lessonList2" placeholder="z. B. Lektion 3" value="${esc(ui.importLesson)}"></label>
@@ -1253,7 +1658,7 @@
 
       <div class="section-title">Sicherung</div>
       <div class="card">
-        <p class="small muted" style="margin-top:0">Alle Vokabeln und dein Lernstand als Datei.</p>
+        <p class="small muted" style="margin-top:0">Alle Vokabeln und dein Lernstand als Datei. Fotos der Buchseiten sind nicht enthalten, die sichert der Geräte-Sync.</p>
         <div class="row"><button class="btn spacer" data-action="export">Sichern</button><button class="btn spacer" data-action="import-file">Wiederherstellen</button></div>
         <input type="file" id="fileIn" accept=".json,application/json" hidden>
       </div>
@@ -1263,7 +1668,7 @@
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.5.1</p>`;
+      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.6</p>`;
 
     Push.paint();
     const f = $('#loginForm');
@@ -1312,6 +1717,34 @@
       persist(); render();
     },
     'new-card': () => go('edit', { editId: null }),
+    'pages-open': el => go('pages', { pagesLesson: el.dataset.lesson }),
+    'pages-filter': el => go('pages', { pagesLesson: el.dataset.lesson }),
+    'pages-camera': () => $('#pgCam').click(),
+    'pages-pick': () => $('#pgPick').click(),
+    'pages-back': () => go('pages', { pagesLesson: state.pages[ui.pageId]?.lesson || ui.pagesLesson }),
+    'page-open': el => go('page', { pageId: el.dataset.id, pageZoom: false, pageTab: 'foto' }),
+    'page-nav': el => {
+      const p = state.pages[ui.pageId], list = lessonPages(p.lesson);
+      const q = list[list.findIndex(x => x.id === p.id) + +el.dataset.d];
+      if (q) go('page', { pageId: q.id, pageZoom: false });
+    },
+    'page-zoom': () => { ui.pageZoom = !ui.pageZoom; render(); },
+    'page-move': el => {
+      const p = state.pages[ui.pageId], list = lessonPages(p.lesson);
+      const i = list.findIndex(x => x.id === p.id), j = i + +el.dataset.d;
+      if (!list[j]) return;
+      list.forEach((x, k) => { if (x.order !== k + 1) { x.order = k + 1; x.updated = now(); } }); // lückenlos nummerieren
+      [list[i].order, list[j].order] = [list[j].order, list[i].order];
+      list[i].updated = list[j].updated = now();
+      save(); render();
+    },
+    'page-delete': () => {
+      if (!confirm('Diese Buchseite löschen?')) return;
+      const lesson = state.pages[ui.pageId]?.lesson;
+      Pages.remove(ui.pageId);
+      toast('Seite gelöscht');
+      go('pages', { pagesLesson: lesson });
+    },
     'exam-new': () => go('examEdit', { examId: null, examDraft: null }),
     'exam-open': el => go('exam', { examId: el.dataset.id }),
     'exam-edit': el => go('examEdit', { examId: el.dataset.id, examDraft: null }),
@@ -1368,25 +1801,39 @@
     'delete-lesson': () => {
       const l = ui.vocabLesson;
       const list = activeCards().filter(c => c.lesson === l);
-      if (!confirm(`Lektion „${l}“ mit ${list.length} Vokabeln löschen?`)) return;
+      const pages = lessonPages(l);
+      if (!confirm(`Lektion „${l}“ mit ${plural(list.length, 'Vokabel', 'Vokabeln')}${pages.length ? ` und ${plural(pages.length, 'Buchseite', 'Buchseiten')}` : ''} löschen?`)) return;
       list.forEach(c => { c.deleted = true; c.updated = now(); });
+      pages.forEach(p => { p.deleted = true; p.updated = now(); });
       ui.vocabLesson = '';
       save(); toast('Lektion gelöscht'); render();
+    },
+    'page-tab': el => { ui.pageTab = el.dataset.v; render(); },
+    'page-recognize': async () => {
+      const id = ui.pageId;
+      ui.pageVocabFor = null;
+      try { await Pages.recognize(id); toast('Erkannt ✓'); } catch (e) { toast(e.message); }
+    },
+    'page-import': () => {
+      const p = state.pages[ui.pageId];
+      const lesson = ($('#pvTarget')?.value || '').trim();
+      if (!lesson) return toast('Gib eine Lektion an');
+      const rows = ($('#pvVocab')?.value || '').split(/\r?\n/).map(parseLine).filter(Boolean);
+      if (!rows.length) return;
+      const added = importRows(lesson, rows);
+      p.imported = lesson;
+      if (p.lesson === 'Unsortiert') { p.lesson = lesson; p.order = Math.max(0, ...lessonPages(lesson).map(x => x.order || 0)) + 1; }
+      p.updated = now();
+      save();
+      ui.pageVocabFor = null;
+      toast(`${plural(added, 'Vokabel', 'Vokabeln')} nach „${lesson}“ übernommen` + (added < rows.length ? ` (${rows.length - added} schon vorhanden)` : ''));
+      render();
     },
     'do-import': () => {
       const lesson = ui.importLesson.trim();
       const rows = ui.importText.split(/\r?\n/).map(parseLine).filter(Boolean);
       if (!lesson || !rows.length) return;
-      const existing = new Set(activeCards().filter(c => c.lesson === lesson).map(c => norm(c.it)));
-      let added = 0, t = now();
-      for (const r of rows) {
-        if (existing.has(norm(r.it))) continue;
-        const id = uid();
-        state.cards[id] = { id, it: r.it, de: r.de, note: r.note, lesson, created: t + added, updated: t };
-        existing.add(norm(r.it));
-        added++;
-      }
-      save();
+      const added = importRows(lesson, rows);
       ui.importText = '';
       toast(`${plural(added, 'Vokabel', 'Vokabeln')} importiert` + (added < rows.length ? ` (${rows.length - added} schon vorhanden)` : ''));
       go('vocab', { vocabLesson: lesson, vocabSearch: '' });
