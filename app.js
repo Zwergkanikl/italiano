@@ -743,6 +743,7 @@
 
     function pickMode(it, mode) {
       if (it.card.gtype === 'conj') return 'table';
+      if (it.card.gtype === 'order') return 'order';
       if (it.card.grammar) return it.card.gtype === 'choice' ? 'choice' : (mode === 'flip' ? 'flip' : 'type');
       if (mode === 'mix') {
         const p = prog(it.card.id, it.dir);
@@ -757,6 +758,12 @@
       S.cur = { ...it, answered: false, ok: null, input: it.mode === 'table' ? [] : '', hint: '', close: false };
       S.showRule = false;
       S.lastInput = null;
+      if (S.cur.mode === 'order') {
+        const tiles = it.card.options || [];
+        let ord = tiles.map((_, i) => i);
+        for (let k = 0; k < 6; k++) { shuffle(ord); if (ord.some((x, i) => x !== i)) break; }
+        S.cur.order = ord; S.cur.picked = [];
+      }
       if (it.mode === 'choice') {
         S.cur.options = it.card.grammar ? shuffle(it.card.options.slice()) : buildOptions(it);
         if (!S.cur.options || S.cur.options.length < 2) S.cur.mode = 'type';
@@ -849,6 +856,14 @@
             lang="${ansLang}" placeholder="${ansLang === 'it' ? 'auf Italienisch …' : 'auf Deutsch …'}" value="${esc(it.input)}" ${it.answered ? 'readonly' : ''}>
           ${ansLang === 'it' && !it.answered ? `<div class="accents">${['à', 'è', 'é', 'ì', 'ò', 'ù'].map(a => `<button data-action="s-accent" data-ch="${a}">${a}</button>`).join('')}</div>` : ''}
           ${it.answered ? '' : `<div class="row" style="margin-top:12px"><button class="btn" data-action="s-skip">Weiß ich nicht</button><button class="btn primary spacer" data-action="s-check">Prüfen</button></div>`}`;
+      } else if (it.mode === 'order') {
+        const tiles = it.card.options || [];
+        const used = new Set(it.picked);
+        body = `<div class="card order-card">
+          <div class="order-line ${it.answered ? (it.ok ? 'ok' : 'bad') : ''}">${it.picked.length ? it.picked.map((ti, pos) => `<button class="tile on" data-action="s-untile" data-k="${pos}" ${it.answered ? 'disabled' : ''}>${esc(tiles[ti])}</button>`).join('') : '<span class="muted small">Tippe die Wörter in der richtigen Reihenfolge an</span>'}</div>
+          ${it.answered ? '' : `<div class="order-pool">${it.order.map(ti => used.has(ti) ? `<span class="tile ghost">${esc(tiles[ti])}</span>` : `<button class="tile" data-action="s-tile" data-i="${ti}">${esc(tiles[ti])}</button>`).join('')}</div>`}
+        </div>
+        ${it.answered ? '' : `<div class="row" style="margin-top:4px"><button class="btn" data-action="s-skip">Weiß ich nicht</button><button class="btn" data-action="s-untile-all">↺</button><button class="btn primary spacer" data-action="s-check" ${it.picked.length ? '' : 'disabled'}>Prüfen</button></div>`}`;
       } else if (it.mode === 'table') {
         const vals = it.input || [];
         body = `<div class="card conj-card">${PERSONS.map((pe, i) => {
@@ -878,7 +893,7 @@
         const sol = answerOf(it);
         fb = it.ok
           ? `<div class="feedback ok"><div class="title">Richtig!</div>${it.hint ? `<div>${esc(it.hint)}</div>` : ''}${it.mode !== 'choice' && !variants(sol).includes(norm(it.input)) ? `<div class="small muted">Lösung: ${esc(sol)}</div>` : ''}</div>`
-          : `<div class="feedback bad"><div class="title">${it.close ? 'Fast! Kleiner Fehler.' : 'Leider falsch'}</div><div class="solution">${esc(sol)}</div>
+          : `<div class="feedback bad"><div class="title">${it.close ? 'Fast! Kleiner Fehler.' : 'Leider falsch'}</div><div class="solution">${esc(sol.split(/\s*;\s*/).join(' / '))}</div>
               ${it.mode === 'type' && it.input ? `<button class="btn small" style="margin-top:8px" data-action="s-override">Ich hatte recht</button>` : ''}</div>`;
       }
 
@@ -952,6 +967,14 @@
       's-reveal': () => answer(null),
       's-grade': el => { S.cur.ok = el.dataset.ok === '1'; commitAndNext(); },
       's-check': () => {
+        if (S.cur.mode === 'order') {
+          const tiles = S.cur.card.options || [];
+          const val = S.cur.picked.map(i => tiles[i]).join(' ');
+          if (!val) return;
+          const r = checkAnswer(val, answerOf(S.cur), 'it', true);
+          answer(r.ok, { input: val, hint: r.hint || '' });
+          return;
+        }
         if (S.cur.mode === 'table') {
           const vals = $$('.conj-input').map(ci => ci.value);
           if (!vals.some(x => norm(x))) { toast('Erst etwas eintippen – oder „Weiß ich nicht“'); return; }
@@ -986,6 +1009,9 @@
       's-next': () => commitAndNext(),
       's-stop': () => stop(),
       's-rule': () => { S.showRule = !S.showRule; draw(); },
+      's-tile': el => { if (!S.cur.answered) { S.cur.picked.push(+el.dataset.i); draw(); } },
+      's-untile': el => { if (!S.cur.answered) { S.cur.picked.splice(+el.dataset.k, 1); draw(); } },
+      's-untile-all': () => { if (!S.cur.answered) { S.cur.picked = []; draw(); } },
       's-again': () => { const items = S.lastWrong, exam = S.exam, random = S.random, mode = S.mode || state.settings.mode; S = null; start(shuffle(items), { mode, exam, random, practice: !!exam || random }); }
     };
 
@@ -995,6 +1021,7 @@
       const it = S.cur;
       if (e.key === 'Enter') {
         e.preventDefault();
+        if (!it.answered && it.mode === 'order') { if (it.picked.length) actions['s-check'](); return; }
         if (!it.answered && it.mode === 'table') {
           const a = document.activeElement;
           if (a && a.classList.contains('conj-input') && +a.dataset.i < 5) $$('.conj-input')[+a.dataset.i + 1].focus();
@@ -1033,9 +1060,24 @@
     list: () => Object.values(state.exams || {}).filter(e => !e.deleted).sort((a, b) => a.date.localeCompare(b.date)),
     upcoming: () => Exams.list().filter(e => e.date >= today()),
     cards(e) {
-      const ls = new Set(e.lessons || []), ids = new Set(e.cardIds || []);
-      return activeCards().filter(c => ls.has(c.lesson) || ids.has(c.id))
+      const ls = new Set(e.lessons || []), ids = new Set(e.cardIds || []), tids = new Set(e.topicIds || []);
+      const vocab = activeCards().filter(c => ls.has(c.lesson) || ids.has(c.id))
         .sort((a, b) => a.lesson.localeCompare(b.lesson, 'de', { numeric: true }) || (a.created || 0) - (b.created || 0));
+      const gram = tids.size ? activeGItems().filter(i => tids.has(i.topicId)).sort((a, b) => (a.created || 0) - (b.created || 0)).map(gCard) : [];
+      const conj = [];
+      if (e.conj) for (const c of vocab) { const vb = verbOf(c); if (vb) for (const t of conjTenses()) { const cc = conjCard(c, vb, t); if (cc) conj.push(cc); } }
+      // reißverschlussartig mischen, damit von Anfang an Vokabeln und Grammatik drankommen
+      const out = [], lists = [vocab, gram, conj];
+      for (let i = 0; out.length < vocab.length + gram.length + conj.length; i++) for (const l of lists) if (i < l.length) out.push(l[i]);
+      return out;
+    },
+    // Abfragen pro Einheit: Vokabeln je Richtung, Grammatik einmal
+    weight: (e, c) => c.grammar ? 1 : dirsFor(e.dir || 'de-it').length,
+    count(e, ids) { const by = new Map(Exams.cards(e).map(c => [c.id, c])); return ids.reduce((n, id) => n + (by.has(id) ? Exams.weight(e, by.get(id)) : 0), 0); },
+    items(e, ids) {
+      const out = [];
+      for (const c of Exams.cards(e)) if (!ids || ids.has(c.id)) for (const d of (c.grammar ? ['de-it'] : dirsFor(e.dir || 'de-it'))) out.push({ card: c, dir: d });
+      return out;
     },
     // Welche Vokabeln sind am Tag `day` dran? reps: {kartenId: {n, first, last, weak}}
     dayList(e, cards, reps, day) {
@@ -1064,17 +1106,17 @@
     // Plan ab heute simulieren (unter der Annahme, dass jeder Tag erledigt wird)
     plan(e) {
       const cards = Exams.cards(e), reps = JSON.parse(JSON.stringify(e.reps || {})), out = [], t = today();
+      const by = new Map(cards.map(c => [c.id, c]));
       for (let d = t; d < e.date && out.length < 400; d = addDays(d, 1)) {
         const l = Exams.dayList(e, cards, reps, d);
-        out.push({ date: d, count: l.ids.length, fresh: l.fresh, final: l.final, done: d === t ? Exams.doneToday(e) : 0 });
+        out.push({ date: d, count: l.ids.reduce((n, id) => n + Exams.weight(e, by.get(id)), 0), fresh: l.fresh, final: l.final, done: d === t ? Exams.doneToday(e) : 0 });
         for (const id of l.ids) { const r = reps[id] || (reps[id] = { n: 0 }); r.n++; r.first = r.first || d; r.last = d; r.weak = false; }
       }
       return out;
     },
     planCounts(e) {
-      const k = dirsFor(e.dir || 'de-it').length;
-      const out = Object.fromEntries(Exams.plan(e).map(p => [p.date, p.count * k]));
-      if (e.date === today()) out[e.date] = Exams.todayList(e).ids.length * k;
+      const out = Object.fromEntries(Exams.plan(e).map(p => [p.date, p.count]));
+      if (e.date === today()) out[e.date] = Exams.count(e, Exams.todayList(e).ids);
       return out;
     },
     progress(e) {
@@ -1095,9 +1137,7 @@
   function startExam(id) {
     const e = state.exams[id];
     if (!e) return;
-    const ids = new Set(Exams.todayList(e).ids);
-    const items = [];
-    for (const c of Exams.cards(e)) if (ids.has(c.id)) for (const d of dirsFor(e.dir || 'de-it')) items.push({ card: c, dir: d });
+    const items = Exams.items(e, new Set(Exams.todayList(e).ids));
     Session.start(shuffle(items), { mode: state.settings.mode, practice: true, exam: id });
   }
 
@@ -1204,10 +1244,11 @@
   const countdown = e => { const d = dayDiff(today(), e.date); return d === 0 ? 'heute' : d === 1 ? 'morgen' : d < 0 ? 'vorbei' : `in ${d} Tagen`; };
 
   function examCard(e, detail = false) {
-    const t = Exams.todayList(e), k = dirsFor(e.dir || 'de-it').length, n = Exams.cards(e).length;
+    const t = Exams.todayList(e), all = Exams.cards(e), nG = all.filter(c => c.grammar).length, n = all.length - nG;
+    const todayN = Exams.count(e, t.ids);
     const done = Exams.doneToday(e), isDay = e.date === today();
     const todayTxt = t.ids.length
-      ? `<b>Heute: ${plural(t.ids.length * k, 'Abfrage', 'Abfragen')}</b>${t.final ? (isDay ? ' · letzter Check' : ' · Generalprobe') : ''}`
+      ? `<b>Heute: ${plural(todayN, 'Abfrage', 'Abfragen')}</b>${t.final ? (isDay ? ' · letzter Check' : ' · Generalprobe') : ''}`
       : done ? 'Heute erledigt ✓' : 'Heute frei';
     const d = new Date(e.date + 'T12:00:00');
     return `<div class="card exam-card" ${detail ? '' : `data-action="exam-open" data-id="${esc(e.id)}"`}>
@@ -1215,7 +1256,7 @@
         <div class="exam-date"><b>${d.getDate()}</b><span>${d.toLocaleDateString('de-DE', { month: 'short' })}</span></div>
         <div class="spacer" style="min-width:0">
           <div class="name">${esc(e.title)}</div>
-          <div class="small muted">${countdown(e)} · ${plural(n, 'Vokabel', 'Vokabeln')}${e.notify ? ' · 🔔 7:00' : ''}</div>
+          <div class="small muted">${countdown(e)} · ${plural(n, 'Vokabel', 'Vokabeln')}${nG ? ` + ${nG} Grammatik` : ''}${e.notify ? ' · 🔔 7:00' : ''}</div>
         </div>
       </div>
       <div class="bar" title="Fortschritt im Lernplan"><i style="width:${Math.round(Exams.progress(e) * 100)}%"></i></div>
@@ -1242,13 +1283,13 @@
     const e = state.exams[ui.examId];
     if (!e || e.deleted) { route = 'exams'; return viewExams(v); }
     setTitle(e.title);
-    const k = dirsFor(e.dir || 'de-it').length, t = today();
+    const t = today();
     const plan = Exams.plan(e);
     const dayName = d => d === t ? 'Heute' : d === addDays(t, 1) ? 'Morgen' : fmtDate(d);
     const rows = plan.map(p => {
       let txt;
-      if (p.final) txt = p.count ? `<b>Generalprobe:</b> ${plural(p.count * k, 'Abfrage', 'Abfragen')}` : 'Generalprobe erledigt ✓';
-      else if (p.count) txt = `${plural(p.count * k, 'Abfrage', 'Abfragen')}${p.fresh ? ` <span class="muted">(${p.fresh} neu)</span>` : ''}`;
+      if (p.final) txt = p.count ? `<b>Generalprobe:</b> ${plural(p.count, 'Abfrage', 'Abfragen')}` : 'Generalprobe erledigt ✓';
+      else if (p.count) txt = `${plural(p.count, 'Abfrage', 'Abfragen')}${p.fresh ? ` <span class="muted">(${p.fresh} neu)</span>` : ''}`;
       else txt = p.date === t && p.done ? 'erledigt ✓' : '<span class="muted">frei</span>';
       if (p.date === t && p.done && p.count) txt += ` <span class="muted">· ${p.done} schon geschafft</span>`;
       return `<div class="plan-row ${p.date === t ? 'today' : ''}"><span class="plan-day">${dayName(p.date)}</span><span class="spacer">${txt}</span></div>`;
@@ -1261,12 +1302,14 @@
       <div class="card">
         ${rows || ''}
         <div class="plan-row exam-day"><span class="plan-day">${dayName(e.date) === 'Heute' ? 'Heute' : fmtDate(e.date)}</span><span class="spacer"><b>🎯 ${esc(e.title)}</b> – viel Erfolg!</span></div>
-        <p class="small muted" style="margin:10px 0 0">Jede Vokabel kommt bis zum Termin etwa ${e.target || 3}× dran, mit wachsenden Abständen. Was du falsch hast, kommt am nächsten Tag nochmal.</p>
+        <p class="small muted" style="margin:10px 0 0">Jede Vokabel und Übung kommt bis zum Termin etwa ${e.target || 3}× dran, mit wachsenden Abständen. Was du falsch hast, kommt am nächsten Tag nochmal.</p>
       </div>
       <div class="section-title">Stoff</div>
       <div class="card small">
         ${lessons.length ? `<div class="chips" style="margin-bottom:${extra ? 8 : 0}px">${lessons.map(l => `<span class="chip on">${esc(l)}</span>`).join('')}</div>` : ''}
         ${extra ? `<div class="muted">+ ${plural(extra, 'einzelne Vokabel', 'einzelne Vokabeln')}</div>` : ''}
+        ${(e.topicIds || []).filter(id => state.gtopics[id] && !state.gtopics[id].deleted).map(id => `<div>📘 ${esc(state.gtopics[id].title)}</div>`).join('')}
+        ${e.conj ? `<div>🔁 Konjugation (${conjTenses().map(x => TENSES[x]).join(', ')})</div>` : ''}
         <div class="muted" style="margin-top:6px">${esc(DIR_LABEL[e.dir] || 'Beide Richtungen')}</div>
       </div>
       <div class="row">
@@ -1280,8 +1323,8 @@
     setTitle(e ? 'Termin bearbeiten' : 'Neuer Termin');
     if (!ui.examDraft) {
       ui.examDraft = e
-        ? { title: e.title, date: e.date, lessons: [...(e.lessons || [])], cardIds: [...(e.cardIds || [])], dir: e.dir || 'de-it', notify: e.notify !== false }
-        : { title: '', date: addDays(today(), 7), lessons: [], cardIds: [], dir: 'de-it', notify: true };
+        ? { title: e.title, date: e.date, lessons: [...(e.lessons || [])], cardIds: [...(e.cardIds || [])], topicIds: [...(e.topicIds || [])], conj: !!e.conj, dir: e.dir || 'de-it', notify: e.notify !== false }
+        : { title: '', date: addDays(today(), 7), lessons: [], cardIds: [], topicIds: [], conj: false, dir: 'de-it', notify: true };
       ui.examSearch = '';
     }
     const d = ui.examDraft;
@@ -1302,7 +1345,12 @@
         <input type="search" id="exSearch" placeholder="Vokabel suchen und anhaken …" value="${esc(ui.examSearch)}" style="margin-bottom:8px">
         <div id="exCardList" class="pick-list"></div>
       </div>
-      <div class="section-title">Richtung</div>
+      <div class="section-title">Grammatik</div>
+      <div class="card">
+        ${activeTopics().length ? `<div class="chips">${activeTopics().map(t => `<button type="button" class="chip ${(d.topicIds || []).includes(t.id) ? 'on' : ''}" data-action="exam-topic" data-id="${esc(t.id)}">📘 ${esc(t.title)}</button>`).join('')}</div>` : '<span class="muted small">Noch keine Grammatik-Themen.</span>'}
+        <label class="check" style="margin-top:10px"><input type="checkbox" id="exConj" ${d.conj ? 'checked' : ''}><span><b>Konjugation</b><br><span class="small muted">Verben aus den gewählten Vokabeln, Zeiten wie im Konjugationstrainer (${conjTenses().map(x => TENSES[x]).join(', ')})</span></span></label>
+      </div>
+      <div class="section-title">Richtung (Vokabeln)</div>
       <div class="seg">${seg('de-it', 'DE → IT')}${seg('it-de', 'IT → DE')}${seg('both', 'Beide')}</div>
       <div class="section-title">Erinnerung</div>
       <div class="card">
@@ -1317,10 +1365,9 @@
       ${e ? `<button class="btn danger block" style="margin-top:12px" data-action="exam-delete">Termin löschen</button>` : ''}`;
 
     const summary = () => {
-      const tmp = { lessons: d.lessons, cardIds: d.cardIds };
-      const n = Exams.cards(tmp).length, days = Math.max(0, dayDiff(today(), d.date));
-      $('#exSummary').innerHTML = `<div class="small">${n ? `<b>${plural(n, 'Vokabel', 'Vokabeln')}</b> ausgewählt` : '<span class="muted">Noch keine Vokabeln ausgewählt.</span>'}
-        ${n && d.date >= today() ? ` · ${plural(days, 'Lerntag', 'Lerntage')} · jede Vokabel ca. ${targetReps(days)}×` : ''}</div>`;
+      const all = Exams.cards(d), nG = all.filter(c => c.grammar).length, nV = all.length - nG, days = Math.max(0, dayDiff(today(), d.date));
+      $('#exSummary').innerHTML = `<div class="small">${all.length ? `<b>${plural(nV, 'Vokabel', 'Vokabeln')}${nG ? ` + ${plural(nG, 'Grammatik-Übung', 'Grammatik-Übungen')}` : ''}</b> ausgewählt` : '<span class="muted">Noch nichts ausgewählt.</span>'}
+        ${all.length && d.date >= today() ? ` · ${plural(days, 'Lerntag', 'Lerntage')} · alles ca. ${targetReps(days)}×` : ''}</div>`;
     };
     const drawCards = () => {
       const q = noAccent(norm(ui.examSearch));
@@ -1341,6 +1388,7 @@
     $('#exTitle').addEventListener('input', ev => { d.title = ev.target.value; });
     $('#exDate').addEventListener('change', ev => { d.date = ev.target.value; summary(); });
     $('#exNotify').addEventListener('change', ev => { d.notify = ev.target.checked; });
+    $('#exConj').addEventListener('change', ev => { d.conj = ev.target.checked; summary(); });
     $('#exSearch').addEventListener('input', ev => { ui.examSearch = ev.target.value; drawCards(); });
     drawCards();
     summary();
@@ -1411,7 +1459,7 @@
 
   // Grammatik-Paket lesen. Rückgabe: {topics: [{title, lesson, explanation, items: [...]}], errors: [], skipped: []}
   const GTYPES = { 'lücke': 'gap', 'luecke': 'gap', 'gap': 'gap', 'wahl': 'choice', 'auswahl': 'choice', 'choice': 'choice', 'übersetze': 'translate', 'uebersetze': 'translate', 'übersetzen': 'translate', 'translate': 'translate' };
-  const GLATER = ['ordne'];
+  const GLATER = [];
   const TENSE_ALIASES = { 'presente': 'presente', 'passato prossimo': 'passato', 'passato': 'passato', 'imperfetto': 'imperfetto', 'futuro': 'futuro', 'futuro semplice': 'futuro' };
   function parsePack(text, defaultLesson = '') {
     const topics = [], errors = [], skipped = [];
@@ -1431,6 +1479,17 @@
       if (!m) { errors.push(`Zeile ${n + 1}: „${l.slice(0, 40)}“ – Typ fehlt (z. B. „lücke:“)`); return; }
       const kind = m[1].toLowerCase(), body = m[2];
       if (GLATER.includes(kind)) { skipped.push(kind); return; }
+      if (kind === 'ordne' || kind === 'satzbau') {
+        const eq2 = body.lastIndexOf(' = ');
+        if (eq2 < 0) { errors.push(`Zeile ${n + 1}: Lösung fehlt („ = Lösung“ am Ende)`); return; }
+        let prompt = body.slice(0, eq2).trim(); const answer = body.slice(eq2 + 3).trim();
+        let tiles;
+        if (prompt.includes(' / ')) { tiles = prompt.split(' / ').map(x => x.trim()).filter(Boolean); prompt = 'Bilde einen richtigen Satz.'; }
+        else tiles = answer.split(';')[0].trim().replace(/[.!?…]+$/, '').split(/\s+/).filter(Boolean);
+        if (tiles.length < 2) { errors.push(`Zeile ${n + 1}: Satz ordnen braucht mindestens 2 Wörter`); return; }
+        cur.items.push({ type: 'order', prompt: prompt || 'Bilde einen richtigen Satz.', answer, options: tiles });
+        return;
+      }
       if (kind === 'konjugiere' || kind === 'konjugation') {
         const [left, right] = body.split(' = ');
         const m2 = left.trim().match(/^([a-zàèéìòù]+)\s*(?:\(([^)]+)\))?$/i);
@@ -1558,7 +1617,7 @@
     setTitle(t.title);
     const items = activeGItems(t.id);
     const s2 = topicStats(t);
-    const typ = { gap: 'Lücke', choice: 'Auswahl', translate: 'Übersetzen', conj: 'Konjugation' };
+    const typ = { gap: 'Lücke', choice: 'Auswahl', translate: 'Übersetzen', conj: 'Konjugation', order: 'Satz ordnen' };
     v.innerHTML = `
       <div class="card">
         <div class="small muted">${esc(t.lesson || 'Ohne Lektion')} · ${plural(s2.n, 'Übung', 'Übungen')}</div>
@@ -1618,6 +1677,7 @@ wahl: Voi ___ molto. | studiate | studiano | studi = studiate
         <code>lücke: Satz mit ___ (Hinweis) = Lösung</code><br>
         <code>wahl: Satz ___ | A | B | C = Lösung</code><br>
         <code>übersetze: deutscher Satz = italienischer Satz</code><br>
+        <code>ordne: Marco spricht Italienisch. = Marco parla italiano.</code> – Wörter werden zu Kacheln<br>
         <code>konjugiere: parlare (presente)</code> – Formen rechnet die App selbst aus (oder <code>= io, tu, lui, noi, voi, loro</code> angeben)<br>
         Mehrere richtige Lösungen mit <code>;</code> trennen.</p>
       </div>`;
@@ -1926,7 +1986,7 @@ wahl: Voi ___ molto. | studiate | studiano | studi = studiate
         <p style="margin-top:0"><b>iPhone / iPad:</b> In Safari öffnen → Teilen-Symbol → „Zum Home-Bildschirm“.</p>
         <p style="margin-bottom:0"><b>PC:</b> In Chrome oder Edge rechts in der Adressleiste auf „App installieren“ klicken.</p>
       </div>
-      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.8</p>`;
+      <p class="small muted" style="text-align:center">Avanti Italiano · Version 1.9</p>`;
 
     Push.paint();
     const f = $('#loginForm');
@@ -2063,11 +2123,15 @@ wahl: Voi ___ molto. | studiate | studiano | studi = studiate
     'exam-learn': el => startExam(el.dataset.id),
     'exam-practice': el => {
       const e = state.exams[el.dataset.id];
-      const items = [];
-      for (const c of Exams.cards(e)) for (const d of dirsFor(e.dir || 'de-it')) items.push({ card: c, dir: d });
-      Session.start(shuffle(items), { mode: state.settings.mode, practice: true, exam: e.id });
+      Session.start(shuffle(Exams.items(e)), { mode: state.settings.mode, practice: true, exam: e.id });
     },
     'exam-dir': el => { ui.examDraft.dir = el.dataset.v; render(); },
+    'exam-topic': el => {
+      const s2 = new Set(ui.examDraft.topicIds || []), id = el.dataset.id;
+      s2.has(id) ? s2.delete(id) : s2.add(id);
+      ui.examDraft.topicIds = [...s2];
+      render();
+    },
     'exam-lesson': el => {
       const s2 = new Set(ui.examDraft.lessons), l = el.dataset.lesson;
       s2.has(l) ? s2.delete(l) : s2.add(l);
@@ -2080,7 +2144,7 @@ wahl: Voi ___ molto. | studiate | studiano | studi = studiate
       d.title = ($('#exTitle')?.value ?? d.title).trim();
       if (!d.title) return toast('Gib dem Termin einen Titel');
       if (!d.date || d.date < today()) return toast('Wähle ein Datum ab heute');
-      if (!Exams.cards(d).length) return toast('Wähle mindestens eine Lektion oder Vokabel');
+      if (!Exams.cards(d).length) return toast('Wähle mindestens eine Lektion, Vokabel oder ein Grammatik-Thema');
       const ex = ui.examId ? state.exams[ui.examId] : null;
       let id;
       if (ex) {

@@ -162,10 +162,27 @@ function dailyMessage(data: any) {
       else if (dir === 'de-it' && (!p || !p.seen)) fresh++;
     }
   }
-  if (!due && !fresh) return null;
-  const body = due
-    ? `${due} ${due === 1 ? 'Vokabel ist' : 'Vokabeln sind'} fällig${fresh ? ` + ${fresh} neue` : ''}. Avanti! 💪`
-    : `${fresh} neue Vokabeln warten auf dich. Avanti! 💪`;
+  // Grammatik (ab v1.9): Übungen aus Paketen + fällige Konjugationen
+  let gram = 0;
+  const topics = data?.gtopics || {};
+  // deno-lint-ignore no-explicit-any
+  for (const i of Object.values<any>(data?.gitems || {})) {
+    if (i.deleted || !topics[i.topicId] || topics[i.topicId].deleted) continue;
+    const p = prog[`g:${i.id}|de-it`];
+    if (!p || !p.seen || p.due <= now) gram++;
+  }
+  // deno-lint-ignore no-explicit-any
+  for (const [k, p] of Object.entries<any>(prog)) {
+    if (!k.startsWith('c:') || !p.seen || p.due > now) continue;
+    const cid = k.split(':')[1];
+    if (cards[cid] && !cards[cid].deleted) gram++;
+  }
+  if (!due && !fresh && !gram) return null;
+  const parts: string[] = [];
+  if (due) parts.push(`${due} ${due === 1 ? 'Vokabel' : 'Vokabeln'} fällig${fresh ? ` + ${fresh} neue` : ''}`);
+  else if (fresh) parts.push(`${fresh} neue ${fresh === 1 ? 'Vokabel' : 'Vokabeln'}`);
+  if (gram) parts.push(`${gram} ${gram === 1 ? 'Grammatik-Übung' : 'Grammatik-Übungen'}`);
+  const body = `${parts.join(' · ')}. Avanti! 💪`;
   return { title: 'Buongiorno! 🇮🇹', body, tag: 'italiano-daily' };
 }
 

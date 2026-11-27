@@ -295,3 +295,13 @@ code { background: var(--surface-2); border-radius: 5px; padding: 1px 5px; font-
 .conj-table td { padding: 3px 14px 3px 0; }
 .conj-table td:first-child { color: var(--muted); width: 58px; }
 .conj-tables { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 16px; }
+
+/* ---------- Satz ordnen ---------- */
+.order-card { padding: 14px; }
+.order-line { min-height: 58px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px; border: 1.5px dashed var(--line); border-radius: 12px; margin-bottom: 14px; }
+.order-line.ok { border-style: solid; border-color: var(--green); background: var(--green-soft); }
+.order-line.bad { border-style: solid; border-color: var(--red); background: var(--red-soft); }
+.order-pool { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
+.tile { border: 1.5px solid var(--line); background: var(--surface); border-radius: 10px; padding: 9px 13px; font-size: 17px; font-weight: 600; min-height: 44px; }
+.tile.on { background: var(--surface-2); }
+.tile.ghost { visibility: hidden; }
